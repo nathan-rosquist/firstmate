@@ -116,6 +116,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |
 | condition->action process bounds | the same suite proves action timeout terminates descendants and command-output staging remains within `FM_WHEN_OUTPUT_TAIL_BYTES` while the command runs |
 | silent failure handling | a nonzero exit with no output publishes nothing and leaves the source registered for retry |
+| kept failure diagnostic | a failed child's stderr tail is kept at `0600` under `state/procevent/<source-id>.stderr` and bounded when the child is loud, never joins the captured result and publishes nothing, is removed by a later successful run of the same source and by `retire`, and a descendant still holding that stderr never delays the runner's completion |
 | inertness | a home with no registered source generates no state, starts no process, and does not need supervision |
 
 ## Runner lifetime and cleanup

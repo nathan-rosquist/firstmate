@@ -1235,6 +1235,77 @@ assert_contains "$out" "no-result" "a failing source with no output publishes no
 assert_present "$HE/state/procevent/fail-src.source" "a failing source stays registered for retry"
 pass "nonzero exit with no output stays armed and silent"
 
+# --- a failed child's reason survives its exit status -----------------------
+# A source armed by reconcile runs detached, so a blocker the child reports - a
+# rejected credential, a missing tool - has nowhere to be seen unless the runner
+# keeps it. It stays diagnostic: never a result, never a wake, never mixed into
+# the captured output, and never outliving a healthy run of the same source.
+HES="$TMP_ROOT/hes"; new_home "$HES"
+pe_register "$HES" lavish blocked-src -- /bin/sh -c \
+  'printf "adapter rejected its credential (HTTP 401)\n" >&2; exit 1' >/dev/null
+out=$(pe "$HES" start blocked-src)
+assert_contains "$out" "no-result" "a blocked source still publishes nothing"
+[ -z "$(wake_payloads "$HES")" ] || fail "a blocked source published an event"
+first_result "$HES" blocked-src >/dev/null 2>&1 && fail "a blocked source captured a result"
+BLOCKED_ERR="$HES/state/procevent/blocked-src.stderr"
+assert_present "$BLOCKED_ERR" "a failed child's reason survives its exit status"
+assert_grep 'HTTP 401' "$BLOCKED_ERR" "the kept reason is the child's own message"
+blocked_mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
+  '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$BLOCKED_ERR")
+assert_contains "$blocked_mode" 600 "the kept reason is private"
+assert_present "$HES/state/procevent/blocked-src.source" "keeping the reason leaves the source armed"
+
+# shellcheck disable=SC2016  # single quotes are deliberate: the child shell expands this.
+pe_register "$HES" lavish loud-fail-src -- /bin/sh -c 'printf "y%.0s" $(seq 1 20000) >&2; exit 1' >/dev/null
+pe "$HES" start loud-fail-src >/dev/null
+LOUD_ERR="$HES/state/procevent/loud-fail-src.stderr"
+assert_present "$LOUD_ERR" "a loud failure is still recorded"
+[ "$(wc -c < "$LOUD_ERR" | tr -d ' ')" -le 4096 ] || fail "a failed child's stderr was kept without a bound"
+
+pe_register "$HES" lavish chatty-src -- /bin/sh -c 'printf "just a warning\n" >&2; printf "payload\n"' >/dev/null
+pe "$HES" start chatty-src >/dev/null
+assert_absent "$HES/state/procevent/chatty-src.stderr" "a successful run keeps no diagnostic behind"
+CHATTY=$(first_result "$HES" chatty-src || true)
+[ -n "$CHATTY" ] || fail "a chatty but successful source captured no result"
+assert_grep 'payload' "$CHATTY" "the captured result still holds the source output verbatim"
+assert_no_grep 'just a warning' "$CHATTY" "the child's stderr never joins its captured result"
+
+pe "$HES" retire blocked-src >/dev/null
+assert_absent "$BLOCKED_ERR" "retiring a source removes the reason with it"
+pass "a detached runner keeps a failed child's bounded, private reason"
+
+# --- completion waits on the child's output and on nothing else -------------
+# `register <adapter> <id> -- <argv>` is a generic boundary, so a child may hand
+# its stderr to a descendant that outlives it. Completion must still be decided
+# by the child's own output alone: anything else stalls every adapter's runner
+# behind a process the runner never agreed to wait for.
+HSE="$TMP_ROOT/hse"; new_home "$HSE"
+STDERR_HOLDER="$TMP_ROOT/stderr-holder.sh"
+cat > "$STDERR_HOLDER" <<'SH'
+#!/usr/bin/env bash
+# Leaves a descendant holding the inherited stderr long after this child exits,
+# with stdout sent elsewhere so only stderr could gate the runner.
+( sleep 20 ) >/dev/null &
+printf 'payload past a lingering grandchild\n'
+exit 0
+SH
+chmod +x "$STDERR_HOLDER"
+pe_register "$HSE" lavish holder-src -- "$STDERR_HOLDER" >/dev/null
+FM_HOME="$HSE" "$ROOT/bin/fm-procevent.sh" start holder-src >/dev/null 2>&1 &
+holder_pid=$!
+( sleep 10; kill -TERM "$holder_pid" 2>/dev/null ) >/dev/null 2>&1 &
+holder_guard=$!
+holder_rc=0
+wait "$holder_pid" || holder_rc=$?
+kill "$holder_guard" 2>/dev/null
+wait "$holder_guard" 2>/dev/null
+[ "$holder_rc" -eq 0 ] || fail "a descendant holding stderr stalled the runner past the child's exit (exit $holder_rc)"
+HOLDER_RESULT=$(first_result "$HSE" holder-src || true)
+[ -n "$HOLDER_RESULT" ] || fail "the source with a lingering grandchild captured no result"
+assert_grep 'lingering grandchild' "$HOLDER_RESULT" "the child's own output is still captured verbatim"
+pe "$HSE" retire holder-src >/dev/null
+pass "a descendant holding the child's stderr never gates the runner's completion"
+
 HF="$TMP_ROOT/hf"; new_home "$HF"
 # shellcheck disable=SC2016  # single quotes are deliberate: the child shell expands this.
 pe_register "$HF" lavish big-src -- /bin/sh -c 'printf "x%.0s" $(seq 1 5000)' >/dev/null
@@ -1370,6 +1441,14 @@ assert_contains "$runner_help" "Durability boundary" \
   "the runner's help scopes what it actually proves"
 assert_not_contains "$runner_help" "exactly-once" \
   "the runner's help claims no exactly-once delivery"
+# The durability boundary ends by naming what the runner does NOT prove, and
+# that closing clause is the part most easily lost when the header grows. Help
+# that silently drops its own limitation misleads harder than help that is
+# merely short, so the last rendered line is pinned to it.
+assert_contains "$runner_help" "about the source side of the handoff." \
+  "the runner's help states that it proves nothing about the source side"
+[ "$(printf '%s\n' "$runner_help" | tail -n 1)" = "about the source side of the handoff." ] \
+  || fail "the runner's help is cut off before the end of its loss-limitation sentence"$'\n'"--- output ---"$'\n'"$runner_help"
 pass "the published interfaces state the loss limitation and claim no lossless delivery"
 
 printf '\nall procevent tests passed\n'
