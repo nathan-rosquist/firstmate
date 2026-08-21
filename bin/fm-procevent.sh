@@ -23,6 +23,13 @@
 #            turn. After publishing, it asks the source's own adapter whether the
 #            captured result ends the source and retires the registration when it
 #            says so, so a source that has ended stops being restarted.
+#            A child that exits non-zero keeps the tail of its stderr, private,
+#            at <state>/procevent/<source-id>.stderr, because this runner is
+#            detached and has nowhere else to leave the reason a source cannot
+#            start - a rejected credential, a missing tool. It is diagnostic
+#            only: nothing waits on it, completion is decided by the child's own
+#            output alone, a successful run removes it, the next run of the same
+#            source replaces it, and dropping the registration drops it too.
 # reconcile  Idempotent liveness entry the watcher calls on its ordinary cycle:
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
@@ -61,6 +68,7 @@
 # Durability boundary: see bin/fm-procevent-lib.sh. This runner proves capture
 # before publication and bounded re-announcement until handled, and nothing
 # about the source side of the handoff.
+# --- end of --help header ---
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,9 +85,17 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
+# A failed child's diagnostics are kept, so they are bounded too - but bounded
+# on read, once the child has exited, never by a reader in the hot path. The
+# result is the payload and is bounded in stream; stderr is diagnostic, nothing
+# waits on it, and it is its LAST bytes that carry the exit message.
+MAX_STDERR_BYTES=4096
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+# Bounded by the header's end marker, not by a line count: a count silently
+# truncates the header - losing its closing limitation - the next time anyone
+# adds a line above. `$d` drops the marker itself so it never reaches an operator.
+usage() { sed -n '2,/^# --- end of --help header ---$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -97,6 +113,7 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
 source_file()  { printf '%s/%s.source\n' "$REG" "$1"; }
 runner_file()  { printf '%s/%s.runner\n' "$REG" "$1"; }
 staging_file() { printf '%s/.%s.%s.output\n' "$REG" "$1" "$2"; }
+stderr_file()  { printf '%s/%s.stderr\n' "$REG" "$1"; }
 
 read_adapter() {  # <source-id>
   local f; f=$(source_file "$1")
@@ -178,6 +195,19 @@ publish_pending() {
   printf '%s\n' "$published"
 }
 
+# Keep only the last MAX_STDERR_BYTES of a kept diagnostic. The child has
+# already exited, so this is a read, not a reader in its path, and the tail is
+# the useful end: an exit message is the last thing a failing child writes.
+bound_stderr_record() {  # <path>
+  local tmp
+  [ "$(wc -c < "$1" 2>/dev/null | tr -d '[:space:]')" -gt "$MAX_STDERR_BYTES" ] 2>/dev/null || return 0
+  tmp=$(umask 077; mktemp "$REG/.stderr.XXXXXX") || return 0
+  if tail -c "$MAX_STDERR_BYTES" "$1" > "$tmp" 2>/dev/null && chmod 0600 "$tmp" && mv -f -- "$tmp" "$1"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+}
+
 isolate_runner() {  # <wait|detach> <source-id>
   local mode=$1 id=$2 program
   # shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
@@ -219,7 +249,7 @@ cmd_start_public() {
 }
 
 cmd_start() {
-  local id=${1-} adapter out rc claimed bound_rc
+  local id=${1-} adapter out err rc claimed bound_rc
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -276,7 +306,17 @@ cmd_start() {
   [ ! -e "$out" ] && [ ! -L "$out" ] || die "cannot safely stage output"
   (umask 077; : > "$out") || die "cannot stage output"
   STAGED_OUTPUT=$out
-  "${ARGV[@]}" 2>/dev/null | perl -e '
+  # The child's stderr is kept rather than discarded, so a detached runner can
+  # still say why a source refused to start. It goes to a plain file the runner
+  # owns and nothing reads while the child runs: completion stays decided by the
+  # child's own output alone, exactly as when this was /dev/null. A file that
+  # cannot be staged falls back to discarding it rather than failing a source
+  # that would otherwise have run.
+  err=$(stderr_file "$id")
+  if [ -L "$err" ] || ! (umask 077; : > "$err") 2>/dev/null; then
+    err=
+  fi
+  "${ARGV[@]}" 2> "${err:-/dev/null}" | perl -e '
     use strict;
     use warnings;
     my $limit = shift;
@@ -308,6 +348,15 @@ cmd_start() {
     3) truncated=1 ;;
     *) die "cannot bound source output" ;;
   esac
+  # Diagnostics are evidence only when the child failed; a successful run leaves
+  # nothing behind, so the record cannot outlive the problem it describes.
+  if [ -n "$err" ]; then
+    if [ "$rc" -ne 0 ] && [ -s "$err" ]; then
+      bound_stderr_record "$err"
+    else
+      rm -f -- "$err"
+    fi
+  fi
 
   if [ "$rc" -ne 0 ] && [ ! -s "$out" ]; then
     # No usable result. Leave the registration armed; the adapter decides
@@ -358,6 +407,7 @@ retire_owned_terminal_source() {  # <source-id>
     && [ "$current_identity" = "$CLAIM_REG_IDENTITY" ] \
     && fm_procevent_claim_mark_terminal_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN"; then
     if rm -f -- "$registration" && [ ! -e "$registration" ] && [ ! -L "$registration" ]; then
+      rm -f -- "$(stderr_file "$id")"
       fm_procevent_claim_release_locked "$id" "$CLAIM_HOME" "$CLAIM_PID" "$CLAIM_TOKEN" || status=1
     else
       status=1
@@ -411,6 +461,7 @@ cmd_reconcile() {
         if fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
           rm -f -- "$(staging_file "$id" "$token")"
           rm -f -- "$(runner_file "$id")"
+          rm -f -- "$(stderr_file "$id")"
           stopped=$((stopped + 1))
         else
           uncertain=$((uncertain + 1))
@@ -444,6 +495,7 @@ cmd_reconcile() {
             && [ ! -e "$(source_file "$id")" ] \
             && [ ! -L "$(source_file "$id")" ] \
             && fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
+            rm -f -- "$(stderr_file "$id")"
             stopped=$((stopped + 1))
           else
             uncertain=$((uncertain + 1))
@@ -578,6 +630,7 @@ cmd_retire() {
   fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
+  rm -f -- "$(stderr_file "$id")"
   fm_procevent_source_lock_release "$id"
   printf 'retired: %s\n' "$id"
 }

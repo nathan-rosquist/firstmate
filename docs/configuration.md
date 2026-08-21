@@ -474,6 +474,10 @@ To recover, restore that home's tracked `bin/fm-procevent.sh`, run `FM_HOME=<hom
 
 `FM_PROCEVENT_MAX_OUTPUT_BYTES` (default 1048576) bounds a single captured result while the source runs; oversized output is drained but truncated with a stderr notice rather than staged or published whole or dropped.
 
+A child that exits non-zero also leaves the tail of its own stderr, private and bounded, at `state/procevent/<source-id>.stderr`, because a runner started by `reconcile` is detached and has nowhere else to report why a source cannot start - a rejected credential, a missing tool.
+That record is diagnostic only: nothing waits on it, completion stays decided by the child's own output alone, and it is never mixed into the captured result or published as a wake.
+Each run of the same source replaces it, a run that succeeds or fails with nothing to report leaves none behind, and retirement removes it with the registration, so the record cannot outlive the problem it describes.
+
 The runner proves exactly one durability boundary: output that reached the runner is stored at mode `0600` before any event referencing it is published, and a captured result with no durable handled acknowledgement remains eligible for bounded re-announcement across any number of drains and restarts, not only the crash window right after capture.
 `bin/fm-procevent.sh handled <source-id> <sequence>` is the only thing that stops re-announcement: a generation-keyed, private, path-safe, durable, and idempotent acknowledgement that atomically checks and deduplicates by the exact source and sequence, so a paired effect gated on its first-time-vs-repeat report is never authorized twice.
 Wake publication itself is still best-effort, so the same source and sequence can repeat even before any restart; handlers deduplicate that identity rather than assuming a wake is unique.
@@ -521,6 +525,9 @@ FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_PROCEVENT_MAX_OUTPUT_BYTES=1048576   # bound on one captured process-to-event result
 FM_PROCEVENT_CLAIM_ROOT=                # machine-wide source claim root; default $XDG_STATE_HOME/firstmate/procevent-claims
+FM_TELEGRAM_POLL_TIMEOUT=50    # telegram adapter only: server-side getUpdates long-poll seconds (bin/fm-procevent-telegram.sh)
+FM_TELEGRAM_BACKOFF_SECONDS=5  # telegram adapter only: the pause before re-polling after a transient network or server error, and the fallback when an HTTP 429 carries no usable retry_after
+FM_TELEGRAM_MAX_BACKOFF_SECONDS=60  # telegram adapter only: cap on the pause an HTTP 429 retry_after can request
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
