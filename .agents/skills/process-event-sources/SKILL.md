@@ -7,7 +7,9 @@ description: >-
   `procevent <adapter> <source-id> <sequence>` check wake.
   Owns the arming commands, the condition->action eligibility boundary, the
   durable result read, which wakes must be routed to their adapter instead of
-  acknowledged generically, the handled acknowledgement contract, the one-owner
+  acknowledged generically, the handled acknowledgement contract, the
+  upstream-ack-before-handled ordering for sources with their own
+  acknowledgement such as Telegram, the one-owner
   rule, the precise durability boundary, and the Lavish adapter's loss
   limitation.
 user-invocable: false
@@ -65,7 +67,11 @@ Eligibility is a firstmate judgment made BEFORE arming, because the scripts cann
 Never bind an action that is destructive, irreversible, or security-sensitive, an action needing captain approval or any gate decision, or an action whose right form depends on what the condition finds - those keep the existing check-fires-then-firstmate-decides flow, for which a plain custom check or another adapter stays correct.
 When in doubt, arm only the condition half as an ordinary check and keep the action as a wake-time decision.
 
-`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-procevent-quota.sh --help`, and `bin/fm-procevent-remote-reply.sh --help` own the exact commands and flags.
+An operator's Telegram replies are armed through `bin/fm-procevent-telegram.sh arm`, so a phone reply wakes firstmate instead of sitting unseen.
+Its header owns the token and cursor file contract; the two rules that matter here are that only the handler advances the cursor, after fully handling a captured result, and that Telegram keeps redelivering every update above that cursor, so any update id at or below the cursor is already seen and must be treated as a no-op.
+You advance that cursor yourself while handling a wake, before you retire that wake rather than at arming time; the acknowledgement step below owns that sequence.
+
+`bin/fm-procevent.sh --help`, `bin/fm-procevent-lavish.sh --help`, `bin/fm-procevent-when.sh --help`, `bin/fm-procevent-quota.sh --help`, `bin/fm-procevent-remote-reply.sh --help`, and `bin/fm-procevent-telegram.sh --help` own the exact commands and flags.
 
 An explicitly enabled external adapter registers through `bin/fm-procevent.sh register-extension`, never through a package-discovered script or package-supplied argv.
 [`docs/configuration.md`](../../../docs/configuration.md#trusted-external-process-event-adapters-configextensionsd) owns setup and [`docs/extension-bindings.md`](../../../docs/extension-bindings.md) owns the narrow trusted-code and untrusted-evidence boundary.
@@ -94,6 +100,14 @@ Two rules the commands cannot enforce for you:
   bin/fm-procevent.sh handled <source-id> <sequence>
   ```
   This call is atomically deduplicated by the exact source and sequence: it prints `handled: <id> <seq>` only the first time and `already-handled: <id> <seq>` on every repeat, so a paired effect gated on that distinction is never authorized twice. Reading the event line or the result file is not handling - only this call durably retires the wake, so call it every time, including on a repeat wake for a sequence you already acted on.
+  When the source also has an upstream acknowledgement, make that one first and this one second, as the next entry sets out.
+: `handled` retires the firstmate-side announcement and nothing else, so a source that also has an upstream acknowledgement needs both steps, in a fixed order.
+A Telegram result is that case: first call the telegram adapter's `ack` for the highest update id you fully handled, and only then call `handled` for the wake.
+`ack` makes no network call - it writes the local cursor under a lock - and the confirmation at Telegram, which is what makes the server stop redelivering those updates, follows on the next poll, because that poll asks for `offset = cursor + 1`.
+Acking first is what makes a crash between the two steps harmless: the cursor has already moved, so the worst case is the same result re-announced under the same sequence with every update id at or below the cursor, which the already-seen rule turns into a no-op.
+Retiring the wake first inverts that, because the still-unconfirmed messages stay above the cursor and come back with the very next poll, as a fresh result under a new sequence, and get fully re-acted on with nothing marking them a repeat.
+Skip the ack altogether and Telegram keeps redelivering those messages: every restarted poll re-captures and re-hands the same batch, so the same reply keeps producing fresh results and fresh wakes until you ack it.
+`bin/fm-procevent-telegram.sh --help` owns the exact command and the cursor contract behind it.
 : Ask the adapter what the result means rather than parsing it yourself.
   `bin/fm-procevent.sh classify <result-file>` routes through the immutable built-in or extension identity captured with that result; for Lavish, its existing direct command returns `feedback`, `ended`, `waiting`, `missing`, or `unknown`.
   Consume a Lavish capture with `bin/fm-procevent-lavish.sh read <result-file>` rather than grepping the raw file: that command reports declared and presented item counts plus a completeness verdict, enumerates every captured queued item while retaining supplied element identity, and surfaces a `tag=message` session-ending message as its own field.
