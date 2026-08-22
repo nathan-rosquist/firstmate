@@ -1025,7 +1025,12 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
 "
 JQ_RENDER
 
-HTML=$(printf '%s' "$SNAPSHOT" | jq -r \
+# MSYS2_ARG_CONV_EXCL: on Git Bash the MSYS runtime rewrites argv values that
+# look like POSIX paths before a native jq sees them (/c/... -> C:/...), so the
+# two --arg home values would never match the snapshot prose and redaction
+# would miss everything. jq takes no filesystem-path argument here, so
+# excluding every argument is safe; the variable is inert off-MSYS.
+HTML=$(printf '%s' "$SNAPSHOT" | MSYS2_ARG_CONV_EXCL='*' jq -r \
   --argjson cards "$CARDS_JSON" \
   --arg title "$TITLE" \
   --argjson landed "$LANDED" \
