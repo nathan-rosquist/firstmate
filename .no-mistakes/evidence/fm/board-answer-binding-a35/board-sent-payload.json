@@ -1,0 +1,19 @@
+{
+  "message": "Answers from the board generated 2026-08-22T02:51:36Z:\nblind-prose [listen-b:blind-src] (Prose above blind clips): audit",
+  "payload": {
+    "tag": "board-answers",
+    "generated": "2026-08-22T02:51:36Z",
+    "text": "blind-prose [listen-b:blind-src] (Prose above blind clips): audit",
+    "data": {
+      "generated": "2026-08-22T02:51:36Z",
+      "answers": {
+        "blind-prose": {
+          "question": "Prose above blind clips",
+          "binds": "listen-b:blind-src",
+          "snapshot": "2026-08-22T02:51:36Z",
+          "answer": "audit"
+        }
+      }
+    }
+  }
+}
