@@ -197,6 +197,47 @@ test_colon_first_key_position_is_answerable() {
   pass "fm-send --resolve-key: a colon-first stated key is open under that key and answerable"
 }
 
+test_two_simultaneous_decisions_stay_distinct_end_to_end() {
+  local dir fb log home rc out
+  dir="$TMP_ROOT/two-open"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home two-open)
+  fm_write_meta "$home/state/t9.meta" "window=sess:fm-t9" "kind=ship"
+  # The concrete hazard: two decisions open at once on ONE task, written in the
+  # two different key positions - the documented before-colon form and the
+  # misplaced-colon form workers commonly produce. If either collapsed into the
+  # shared "default" bucket they would fold together, and answering one would
+  # silently close both.
+  {
+    printf 'needs-decision [key=alpha]: pick the retry ceiling\n'
+    printf 'needs-decision: [key=beta] pick the cache eviction policy\n'
+  } > "$home/state/t9.status"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=alpha]' | grep -F 'pick the retry ceiling' >/dev/null \
+    || fail "precondition: the before-colon decision should list as open under alpha: $out"
+  printf '%s' "$out" | grep -F '[key=beta]' | grep -F 'pick the cache eviction policy' >/dev/null \
+    || fail "precondition: the colon-first decision should list as open under beta: $out"
+
+  run_send "$fb" "$home" "$log" t9 --resolve-key alpha "ceiling of 3"; rc=$?
+  expect_code 0 "$rc" "answering one of two simultaneous decisions should succeed"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=beta]' | grep -F 'pick the cache eviction policy' >/dev/null \
+    || fail "answering alpha also closed the unrelated beta decision: $out"
+  if printf '%s' "$out" | grep -F '[key=alpha]' >/dev/null; then
+    fail "the answered alpha decision still lists as open: $out"
+  fi
+
+  run_send "$fb" "$home" "$log" t9 --resolve-key beta "least-recently-used"; rc=$?
+  expect_code 0 "$rc" "the second decision should still be independently answerable"
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "both decisions were answered but something still lists as open: $out"
+  fi
+  pass "fm-send --resolve-key: two simultaneous decisions in different key positions stay distinct and independently answerable"
+}
+
 test_answer_starts_work_never_orphans() {
   local dir fb log home rc out
   dir="$TMP_ROOT/starts-work"; mkdir -p "$dir"
@@ -499,6 +540,7 @@ test_flag_misuse_refuses() {
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_colon_first_key_position_is_answerable
+test_two_simultaneous_decisions_stay_distinct_end_to_end
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
