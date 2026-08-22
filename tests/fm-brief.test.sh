@@ -323,6 +323,29 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
+# The mode whose worker writes the PR text itself must state that text's SHAPE
+# as a property of the deliverable, so a dense task section cannot become a
+# mono-paragraph PR body. no-mistakes is excluded on purpose: its `--intent` is
+# the captain's own words, which the worker passes through rather than reshapes.
+test_direct_pr_requires_readable_pr_shape() {
+  local home id brief
+  home="$TMP_ROOT/intent-shape-home"
+  write_registry "$home"
+  id="brief-shape-directpr-a2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Write the PR description as short paragraphs and bullets, never one dense block of prose" "$brief" \
+    "direct-PR DOD must require a readable PR description shape"
+  assert_grep "that is a requirement about the description's shape, not text to copy into it" "$brief" \
+    "direct-PR DOD must mark the shape rule as form, not content to paste"
+  id="brief-shape-localonly-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "short paragraphs and bullets" "$brief" \
+    "local-only brief produces no PR and must not carry a PR-text shape rule"
+  pass "fm-brief.sh: direct-PR requires a readable PR description shape"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -877,6 +900,7 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_direct_pr_requires_readable_pr_shape
 test_no_mistakes_dod_wording
 test_ask_user_escalation_format
 test_ship_project_memory_wording
