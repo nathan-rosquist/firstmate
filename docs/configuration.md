@@ -334,6 +334,14 @@ The locked bootstrap inheritance pass uses the same placement-specific behavior;
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 
+## Windows symlink mode (Git Bash / MSYS)
+
+On a native Windows Git Bash (MSYS) host, `MSYS=winsymlinks:sys` must be present in the environment of every firstmate process.
+Without it, `ln -s` silently creates a directory or file copy instead of a link, which permanently poisons the symlink-based session and watcher locks the moment one is taken.
+`winsymlinks:nativestrict` is not a safe alternative: without Windows Developer Mode it crashes bash outright (observed as STATUS_STACK_OVERFLOW), and `winsymlinks:native` silently falls back to copies in the same case.
+The tracked [`.claude/settings.json`](../.claude/settings.json) `env` block sets it for Claude Code primary sessions, including their hooks and the watcher processes those hooks launch; the variable is inert on non-MSYS hosts.
+Any other primary harness, any crew pane shell, and any manually opened shell must export it before running firstmate commands, for example from the shell profile.
+
 ## Watched tool updates (config/watched-tools.json)
 
 `config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
