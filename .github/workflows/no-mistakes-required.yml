@@ -51,7 +51,7 @@ jobs:
             fi
             prefix='<!-- no-mistakes-pipeline-attestation:v1 '
             suffix=' -->'
-            body="${PR_BODY:-}"
+            body="$pr_body"
             json=''
             parse_ok=0
             case "$body" in
