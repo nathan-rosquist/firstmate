@@ -13,6 +13,9 @@ set -u
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/board-dom-helpers.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/board-dom-helpers.sh"
 
 BOARD="$ROOT/bin/fm-board.sh"
 SNAPSHOT_CMD="$ROOT/bin/fm-fleet-snapshot.sh"
@@ -361,12 +364,9 @@ assert_grep 'value="audit"' "$OUT2" "an option carries no answer value"
 # maps back to the identity that was validated rather than to a card key alone.
 assert_grep 'data-binds="listen-b:blind-src"' "$OUT2" \
   "an answer carries no link to the durable decision it answers"
-assert_grep "getAttribute('data-binds')" "$OUT2" \
-  "the answer payload drops the durable decision identity"
 SEND_CONTROLS=$(grep -c 'id="send"' "$OUT2")
 [ "$SEND_CONTROLS" = 1 ] || fail "expected exactly one send control, found $SEND_CONTROLS"
 assert_grep "sendQueuedPrompts" "$OUT2" "the send control queues nothing"
-assert_grep "sendBtn.disabled = true" "$OUT2" "the send control does not reset for a further round"
 assert_grep "the answers were not delivered" "$OUT2" \
   "the no-bridge fallback never admits a delivery that did not happen"
 pass "answers are identified by question and one send control carries them"
@@ -379,6 +379,86 @@ if command -v node >/dev/null 2>&1; then
   pass "the artifact's script parses"
 else
   echo "skip: node not found, artifact script not parsed"
+fi
+
+# --- an answer names its decision, its board, and visibly lands --------------
+#
+# Driven through the artifact's own script rather than read off its source: the
+# whole contract here is what the page does when an operator clicks it.
+if command -v node >/dev/null 2>&1; then
+  DRIVEN="$TMP_ROOT/driven.json"
+  fm_board_drive "$OUT2" blind-prose audit split > "$DRIVEN" \
+    || fail "the artifact's script could not be driven"
+
+  GEN_ISO=$(jq -r '.generated' "$SNAP")
+  [ -n "$GEN_ISO" ] && [ "$GEN_ISO" != null ] || fail "the fixture snapshot recorded no generation time"
+
+  jq -e '.sends | length == 2' "$DRIVEN" >/dev/null \
+    || fail "expected exactly one delivery per answered round, got $(jq -c '.sends | length' "$DRIVEN")"
+
+  # An arriving answer has to name the durable decision it answers, so a stale
+  # one can be recognised as stale instead of acted on a second time.
+  jq -e --arg b listen-b:blind-src \
+    '.sends[0].payload.data.answers["blind-prose"].binds == $b' "$DRIVEN" >/dev/null \
+    || fail "the sent answer does not name the durable decision it answers"
+  jq -e --arg g "$GEN_ISO" \
+    '.sends[0].payload.data.answers["blind-prose"].snapshot == $g' "$DRIVEN" >/dev/null \
+    || fail "the sent answer does not carry the time the board it was clicked on was drawn"
+  jq -e --arg g "$GEN_ISO" '.sends[0].payload.data.generated == $g' "$DRIVEN" >/dev/null \
+    || fail "the payload does not carry the board's snapshot time"
+  jq -e --arg g "$GEN_ISO" '.sends[0].text | contains("listen-b:blind-src")' "$DRIVEN" >/dev/null \
+    || fail "the readable answer line does not name the durable decision"
+  jq -e --arg g "$GEN_ISO" '.sends[0].text | contains($g)' "$DRIVEN" >/dev/null \
+    || fail "the readable answer text does not say which board it came from"
+  pass "an answer names the durable decision it answers and the board it was clicked on"
+
+  # The click has to land on the decision's own card. Reporting only that a
+  # message left the browser is what made pressing send again reasonable.
+  jq -e '.beforeSend.classes | contains("answered-card") | not' "$DRIVEN" >/dev/null \
+    || fail "a card read as answered before anything was sent"
+  jq -e '.beforeSend.noteHidden == true' "$DRIVEN" >/dev/null \
+    || fail "the answered note is showing before an answer was sent"
+  jq -e '.afterSend.classes | contains("answered-card")' "$DRIVEN" >/dev/null \
+    || fail "the card does not read as answered after its answer was sent"
+  jq -e '.afterSend.noteHidden == false' "$DRIVEN" >/dev/null \
+    || fail "the answered note stayed hidden after the answer was sent"
+  jq -e '.afterSend.noteText | contains("A, done properly")' "$DRIVEN" >/dev/null \
+    || fail "the answered card does not repeat the option that was answered"
+  jq -e '.afterSend.sendLabel | contains("Sent") | not' "$DRIVEN" >/dev/null \
+    || fail "the send control still reports delivery instead of the card carrying it"
+  jq -e '.afterSend.sendDisabled == true' "$DRIVEN" >/dev/null \
+    || fail "the send control stayed armed with nothing left to send"
+  pass "a sent answer lands visibly on its own card, with no page reload"
+
+  # A genuine change of mind reopens the card and is deliverable; re-picking the
+  # same option fires no change at all, so the same answer cannot be sent twice.
+  jq -e '.afterRepick.classes | contains("answered-card") | not' "$DRIVEN" >/dev/null \
+    || fail "changing the answer left the card reading as already answered"
+  jq -e '.sends[1].payload.data.answers["blind-prose"].answer == "split"' "$DRIVEN" >/dev/null \
+    || fail "a changed answer was not delivered"
+  jq -e '.afterIdleSend.classes | contains("answered-card")' "$DRIVEN" >/dev/null \
+    || fail "pressing send with nothing picked cleared the answered card"
+  pass "changing an answer reopens the card; pressing send again delivers nothing new"
+
+  # With no review session attached the clipboard copy is the delivery, so it
+  # has to carry the board's snapshot time exactly like the bridge prompt does.
+  DRIVEN_NB="$TMP_ROOT/driven-no-bridge.json"
+  fm_board_drive --no-bridge "$OUT2" blind-prose audit > "$DRIVEN_NB" \
+    || fail "the artifact's script could not be driven without a bridge"
+  jq -e '.sends | length == 0' "$DRIVEN_NB" >/dev/null \
+    || fail "an answer reached a bridge that was not attached"
+  jq -e '.copies | length >= 1' "$DRIVEN_NB" >/dev/null \
+    || fail "the no-bridge send copied nothing to the clipboard"
+  jq -e --arg g "$GEN_ISO" \
+    '.copies[0] | startswith("Answers from the board generated " + $g + ":")' "$DRIVEN_NB" >/dev/null \
+    || fail "the copied answers do not carry the time the board was drawn"
+  jq -e '.copies[0] | contains("listen-b:blind-src")' "$DRIVEN_NB" >/dev/null \
+    || fail "the copied answers do not name the durable decision"
+  jq -e '.afterSend.pending | contains("answers copied instead")' "$DRIVEN_NB" >/dev/null \
+    || fail "the page does not admit the answers were copied instead of delivered"
+  pass "with no bridge the copied answers carry the board's snapshot time"
+else
+  echo "skip: node not found, artifact interaction not driven"
 fi
 
 # --- the snapshot's age is visible and honest --------------------------------

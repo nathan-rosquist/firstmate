@@ -36,6 +36,16 @@
 # marked as not yet elaborated. Silence about a pending decision is the one
 # failure this board must not have, so an unelaborated key is never dropped.
 #
+# ANSWERS. A click is an answer to a durable decision, not to a card, so it
+# carries the card's validated `binds` and the time this board's state was read.
+# An answer that arrives after its decision has closed is then recognisable as an
+# answer to a board that has since moved, rather than acted on a second time.
+# The answered card, not the send control, carries that the answer went: a
+# control that only reports a message leaving the browser makes pressing it again
+# the reasonable thing to do. A regenerated board drops resolved decisions
+# outright; the answered mark covers only the window until then.
+# See ANSWERS in --help for the exact payload.
+#
 # The artifact is self-contained: one file, no CDN, no sibling assets, so it opens
 # from disk on any device whether or not a viewer is running. Every rendered string
 # is HTML-escaped, and paths under the operator's home are reduced to ~ before
@@ -109,6 +119,34 @@ BOARD CARDS
   slug, a recommendation that names no option, or a `binds` naming a decision the
   durable logs do not have all refuse the render rather than producing a partial
   board. A decision open in a delegated home is bound as <home>/<task-id>:<key>.
+
+ANSWERS
+
+  Picking an option and pressing Send hands the attached review session one
+  prompt plus this payload:
+
+    { tag: "board-answers",
+      generated: "<the board's snapshot time, ISO 8601>",
+      text: "<one readable line per answer>",
+      data: {
+        generated: "<the same snapshot time>",
+        answers: {
+          "<card key>": {
+            question: "<the card's title>",
+            binds: "<task-id>:<decision-key>", or null on an unbound card,
+            snapshot: "<the same snapshot time>",
+            answer: "<the option value that was picked>"
+          }
+        }
+      } }
+
+  Check `binds` against the decisions still open before acting: an answer whose
+  decision has already closed answers a board that has since moved, and is
+  reported as such rather than carried out again.
+
+  With no review session attached nothing is sent; the answers are copied to the
+  clipboard instead, under the same generated-time header the prompt carries,
+  and the page says so.
 EOF
 }
 
@@ -475,6 +513,11 @@ def clip($n): if (. | length) > $n then (.[0:$n] | rtrimstr(" ")) + "…" else .
 # home path can never be cut into a fragment the leak guard would not recognise.
 def escn($n): redact | clip($n) | @html;
 
+# A value crossing into the page's script rather than its markup. Redacted like
+# every other rendered string, JSON-encoded for the JS parser, and with '<'
+# escaped so no value can close the script element it sits inside.
+def jsstr: redact | tojson | gsub("<"; "\\u003c");
+
 def basename: (. // "") | split("/") | last // "";
 def hhmm: (. // "") | (try (fromdateiso8601 | strflocaltime("%H:%M")) catch "");
 def when($iso): ($iso | hhmm) as $t | (if $t == "" then "" else "state as of " + $t end);
@@ -575,6 +618,7 @@ def when($iso): ($iso | hhmm) as $t | (if $t == "" then "" else "state as of " +
     + ([$c.body[] | "<p>\(. | md)</p>"] | join(""))
     + ([$c.warn[] | "<p class=\"callout\">\(. | md)</p>"] | join(""))
     + "<div class=\"opts\">\(option_html($c))</div>"
+    + "<p class=\"answered\" hidden></p>"
     + ([$c.footnote[] | "<p class=\"fine\">\(. | md)</p>"] | join(""))
     + "</article>";
 
@@ -721,13 +765,13 @@ def when($iso): ($iso | hhmm) as $t | (if $t == "" then "" else "state as of " +
 :root{
   --bg:#eef1f6;--surface:#fff;--ink:#182030;--ink-soft:#333c4d;--muted:#5c6577;--line:#dde2ea;
   --primary:#4553c8;--primary-soft:#eceefb;--warning:#9a6510;--warning-soft:#fdf3e2;
-  --info:#0d6f84;--info-soft:#e6f3f6;--error:#b02a1f;--ok:#2c7a4f;--shadow:0 1px 2px rgba(20,26,40,.08),0 1px 8px rgba(20,26,40,.05);
+  --info:#0d6f84;--info-soft:#e6f3f6;--error:#b02a1f;--ok:#2c7a4f;--ok-soft:#e8f4ed;--shadow:0 1px 2px rgba(20,26,40,.08),0 1px 8px rgba(20,26,40,.05);
 }
 @media (prefers-color-scheme:dark){
   :root{
     --bg:#12161f;--surface:#1b212d;--ink:#e6e9f0;--ink-soft:#c8cedb;--muted:#9aa3b4;--line:#2a3140;
     --primary:#8d9bff;--primary-soft:#232a49;--warning:#e0a95c;--warning-soft:#2e2718;
-    --info:#6fc7d8;--info-soft:#162b31;--error:#f08b80;--ok:#79c79b;--shadow:none;
+    --info:#6fc7d8;--info-soft:#162b31;--error:#f08b80;--ok:#79c79b;--ok-soft:#16281f;--shadow:none;
   }
 }
 html{-webkit-text-size-adjust:100%}
@@ -778,6 +822,12 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
 .opt input{position:absolute;opacity:0;pointer-events:none}
 .opt:hover{border-color:var(--primary)}
 .opt.picked{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary);background:var(--primary-soft)}
+/* An answered card is the decision's own state, not the send button's: it has to
+   survive the click that sent it and read as answered until the next board. */
+.card.answered-card{border-left-color:var(--ok)}
+.card p.answered,p.answered{font-size:13px;background:var(--ok-soft);color:var(--ok);
+  padding:8px 10px;border-radius:6px}
+[hidden]{display:none}
 .rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);
   padding:16px;display:flex;flex-direction:column;gap:12px;font-size:14px;min-width:0}
 .row{display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere}
@@ -840,6 +890,9 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
 <script>
 (function () {
   var generated = \($gen_epoch) * 1000;
+  // The time this page's state was read, carried with every answer so a reply
+  // arriving later says which board it was clicked on.
+  var generatedIso = \($s.generated | jsstr);
   var staleMins = \($stale);
   var answers = Object.create(null);
   var sendBtn = document.getElementById('send');
@@ -871,6 +924,40 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
     pending.textContent = n === 0 ? '' : (n === 1 ? '1 answer ready' : n + ' answers ready');
   }
 
+  function cardOf(input) { return input ? input.closest('.card') : null; }
+  function noteOf(card) { return card ? card.querySelector('p.answered') : null; }
+
+  // The chosen option as the operator read it, without the recommendation pill,
+  // so an answered card repeats the label rather than its slug.
+  function optionLabel(input) {
+    var opt = input.closest('.opt');
+    var span = opt ? opt.querySelector('span') : null;
+    if (!span) return input.value;
+    var clone = span.cloneNode(true);
+    var pill = clone.querySelector('.pill');
+    if (pill) { pill.parentNode.removeChild(pill); }
+    return clone.textContent.trim() || input.value;
+  }
+
+  function clearAnswered(card) {
+    var note = noteOf(card);
+    if (card) { card.classList.remove('answered-card'); }
+    if (note) { note.textContent = ''; note.hidden = true; }
+  }
+
+  function markAnswered(card, input, fallback) {
+    var note = noteOf(card);
+    if (card) { card.classList.add('answered-card'); }
+    if (note) {
+      // The label usually ends its own sentence; trimming that keeps the note
+      // from reading as two full stops in a row.
+      var label = (input ? optionLabel(input) : fallback).replace(/[.\\s]+$/, '');
+      note.textContent = 'Answered: ' + label
+        + '. Sent from this board; it stays here until the next board is drawn.';
+      note.hidden = false;
+    }
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll('.opt input[type=radio]'), function (input) {
     input.addEventListener('change', function () {
       var label = input.closest('.opt');
@@ -881,8 +968,12 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
       answers[input.name] = {
         question: input.getAttribute('data-question') || input.name,
         binds: input.getAttribute('data-binds') || null,
+        snapshot: generatedIso,
         answer: input.value
       };
+      // Re-picking the same option fires no change event, so only a genuine
+      // change of mind lands here; it reopens an already-answered card.
+      clearAnswered(cardOf(input));
       refresh();
     });
   });
@@ -897,14 +988,15 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
       return k + (a.binds ? ' [' + a.binds + ']' : '') + ' (' + a.question + '): ' + a.answer;
     });
     var text = lines.join('\\n');
-    var payload = { tag: 'board-answers', text: text, data: { answers: JSON.parse(JSON.stringify(answers)) } };
+    var message = 'Answers from the board generated ' + generatedIso + ':\\n' + text;
+    var payload = { tag: 'board-answers', generated: generatedIso, text: text,
+      data: { generated: generatedIso, answers: JSON.parse(JSON.stringify(answers)) } };
     if (window.lavish && typeof window.lavish.queuePrompt === 'function') {
-      window.lavish.queuePrompt('Answers from the board:\\n' + text, payload);
+      window.lavish.queuePrompt(message, payload);
       window.lavish.sendQueuedPrompts();
-      pending.textContent = 'on its way';
     } else {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        navigator.clipboard.writeText(text).then(function () {
+        navigator.clipboard.writeText(message).then(function () {
           pending.textContent = 'no review session attached - answers copied instead';
         }, function () {
           pending.textContent = 'no review session attached - the answers were not delivered';
@@ -914,14 +1006,15 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:u
       }
       return;
     }
-    keys.forEach(function (k) { delete answers[k]; });
-    Array.prototype.forEach.call(document.querySelectorAll('.opt input[type=radio]:checked'), function (i) {
-      i.checked = false;
-      i.closest('.opt').classList.remove('picked');
+    // The pick stays on screen and the card says it was answered. Clearing the
+    // radios instead would leave the button as the only trace of the click, and
+    // a button that only says a message left the browser invites a second one.
+    keys.forEach(function (k) {
+      var input = document.querySelector('.opt input[name=\"' + k + '\"]:checked');
+      markAnswered(cardOf(input), input, answers[k].answer);
+      delete answers[k];
     });
-    Array.prototype.forEach.call(document.querySelectorAll('.opt.picked'), function (l) { l.classList.remove('picked'); });
-    sendBtn.disabled = true;
-    sendBtn.textContent = 'Sent - ready for more';
+    refresh();
   });
 
   refresh();
