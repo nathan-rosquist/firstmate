@@ -1,0 +1,24 @@
+# Rendered escalation rule, ship scaffold (generated brief.md)
+39-6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
+40:   append `needs-decision [key=<slug>]: {summary of options}` and stop. Firstmate will apply the configured authority and reply with the decision.
+41-   Write that `[key=<slug>]` token BETWEEN the verb and the colon, never after it, and give every decision its own slug: `needs-decision [key=api-shape]: REST or RPC for the sync endpoint`.
+42-   A `blocked` line you open takes a key the same way. Two unkeyed escalations on one task share a single record, so answering either would close both.
+43-   A decision or blocker you opened stays open until a `resolved` line carrying its exact key lands; a later `done:` or `working:` line never closes it, even when the answer is what started that work.
+44-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append `resolved [key=<slug>]: {how it cleared}` yourself, carrying that same key in that same before-the-colon position, as you resume.
+
+# Rendered escalation rule, scout scaffold (generated brief.md)
+32-6. If a decision belongs to a human (product choices, destructive actions),
+33:   append `needs-decision [key=<slug>]: {summary of options}` and stop. Firstmate will reply with the decision.
+34-   Write that `[key=<slug>]` token BETWEEN the verb and the colon, never after it, and give every decision its own slug: `needs-decision [key=api-shape]: REST or RPC for the sync endpoint`.
+35-   A `blocked` line you open takes a key the same way. Two unkeyed escalations on one task share a single record, so answering either would close both.
+36-   A decision or blocker you opened stays open until a `resolved` line carrying its exact key lands; a later `done:` or `working:` line never closes it, even when the answer is what started that work.
+37-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append `resolved [key=<slug>]: {how it cleared}` yourself, carrying that same key in that same before-the-colon position, as you resume.
+
+# Rendered escalation rule, secondmate charter (generated brief.md)
+46-`resolved` separately closes an escalated decision or blocker, and only a `resolved` line carrying that decision's exact key closes it: a later `done` or `working` event never does, even when the answer is what started that work.
+47:Give every escalated decision or blocker its own key too, written BETWEEN the verb and the colon exactly as above: `needs-decision [key=api-shape]: REST or RPC for the sync endpoint`, because two unkeyed escalations share a single record.
+48-The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append `resolved [key=<slug>]: {how it cleared}` yourself, carrying that same key in that same before-the-colon position, as your domain resumes.
+49-Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
+
+# Old vague wording must be gone from all three:
+not present in any generated brief (good)

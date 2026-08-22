@@ -1,0 +1,4 @@
+# Non-vacuity check: same new test run against the PRE-change bin/fm-brief.sh (base a93ceb6)
+$ git checkout a93ceb6 -- bin/fm-brief.sh && bash tests/fm-brief.test.sh
+not ok - ship brief must have the worker OPEN a decision with a key, not unkeyed
+(suite aborts at that first failed assertion; restored to target commit afterwards)
