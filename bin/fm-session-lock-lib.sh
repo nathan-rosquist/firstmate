@@ -17,10 +17,23 @@
 . "$(dirname -- "${BASH_SOURCE[0]}")/fm-cursor-lib.sh"
 
 # Native Windows process facts, for the MSYS case where this process tree cannot
-# reach its own harness. Sourced unconditionally; every entry point in it gates
-# on fm_winproc_available, so a Linux or macOS home is unaffected.
+# reach its own harness. Every entry point in it gates on fm_winproc_available,
+# so a Linux or macOS home is unaffected whether or not the file is here.
+#
+# Sourced only when present, because eighteen test fixtures build a partial bin/
+# holding just the scripts under test, and a hard source turns this library's
+# own absence of a sibling into an unrelated failure inside those cases. A home
+# with no bridge simply has no Windows process facts to offer, which is the
+# state every non-Windows home is already in. This cannot mask a broken install
+# on an MSYS host either: the callers below fall through to the POSIX walk,
+# which still refuses with its original "cannot locate harness process in
+# ancestry" diagnostic. tests/fm-winproc-lib.test.sh pins the absent case.
 # shellcheck source=bin/fm-winproc-lib.sh
-. "$(dirname -- "${BASH_SOURCE[0]}")/fm-winproc-lib.sh"
+if [ -r "$(dirname -- "${BASH_SOURCE[0]}")/fm-winproc-lib.sh" ]; then
+  . "$(dirname -- "${BASH_SOURCE[0]}")/fm-winproc-lib.sh"
+else
+  fm_winproc_available() { return 1; }
+fi
 
 # Print a Windows image path in the form the harness matcher expects.
 #
