@@ -210,4 +210,29 @@ if FM_WINPROC_FORCE=1 FM_WINPROC_PS_CMD=ps_fixture \
 fi
 pass "fm_harness_pid_alive rejects a live process that is not a harness"
 
+# --- the bridge file itself is absent -----------------------------------------
+#
+# Eighteen test fixtures build a partial bin/ holding only the scripts under
+# test, so bin/fm-session-lock-lib.sh gets copied without its Windows sibling.
+# A hard source there killed the library and failed three CI shards for reasons
+# that had nothing to do with the cases being run. Reproduce that layout exactly
+# and require the library to load and keep answering.
+
+PARTIAL="$(fm_test_tmproot winproc-partial)/bin"
+mkdir -p "$PARTIAL"
+cp "$ROOT/bin/fm-session-lock-lib.sh" "$PARTIAL/fm-session-lock-lib.sh"
+cp "$ROOT/bin/fm-cursor-lib.sh" "$PARTIAL/fm-cursor-lib.sh"
+[ ! -e "$PARTIAL/fm-winproc-lib.sh" ]   || fail "the partial fixture must not contain the bridge"
+
+if ! ABSENT_OUT=$(bash -c '
+  . "$1/fm-session-lock-lib.sh" || { echo "SOURCE-FAILED"; exit 1; }
+  fm_winproc_available && { echo "STUB-CLAIMED-AVAILABLE"; exit 1; }
+  fm_harness_pid_alive 999999 && { echo "DEAD-PID-READ-AS-ALIVE"; exit 1; }
+  echo LOADED
+' _ "$PARTIAL" 2>&1); then
+  fail "without the bridge the session-lock library must still load: $ABSENT_OUT"
+fi
+[ "$ABSENT_OUT" = LOADED ]   || fail "unexpected output with the bridge absent: $ABSENT_OUT"
+pass "the session-lock library loads and still answers with the bridge absent"
+
 echo "# fm-winproc-lib.test.sh: all assertions passed"
