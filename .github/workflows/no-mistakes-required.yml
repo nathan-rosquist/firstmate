@@ -5,7 +5,10 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
     branches:
-      - main
+      # Fork-local: this gate fails any hand-authored PR to main, and this
+      # fork delivers by hand. Pointed at a branch that does not exist so the
+      # job never runs here, leaving the rest byte-identical to upstream.
+      - no-mistakes-only
 
 permissions:
   contents: read

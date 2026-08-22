@@ -13,6 +13,16 @@
 # shellcheck disable=SC2016 # single quotes are deliberate: $FM_HOME and $$ expand inside the fixture child
 set -u
 
+# Every case here simulates a POSIX host: the unit layer drives the library
+# behind a deterministic fake ps to cover both Linux and macOS reporting
+# semantics, and the end-to-end layer builds real orphaned process trees. On a
+# Git Bash host the native Windows bridge in bin/fm-winproc-lib.sh would answer
+# the ancestry question first and report the REAL harness, so the fixtures would
+# be bypassed and every assertion here would describe the live session instead
+# of the tree under test. Disable it so this file means the same thing on every
+# host; tests/fm-winproc-lib.test.sh owns the bridge's own coverage.
+export FM_WINPROC_DISABLE=1
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
