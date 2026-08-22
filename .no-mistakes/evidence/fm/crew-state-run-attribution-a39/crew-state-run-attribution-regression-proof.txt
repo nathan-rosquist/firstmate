@@ -1,0 +1,23 @@
+== Regression proof for bin/fm-crew-state.sh run attribution ==
+
+-- 1. PRE-FIX (base e0a51d1) + new tests from 43f7953: the reported bug reproduces --
+
+not ok - live rerun outranks the terminal run it superseded (missing: 'state: working')
+--- output ---
+state: failed · source: run-step · run failed
+
+-- 2. POST-FIX (43f7953): the seven new attribution tests pass --
+
+ok - missing run head falls back instead of matching by branch
+ok - live rerun outranks a terminal run on the same branch
+ok - runs-list attribution prefers a live rerun over a terminal same-head run
+ok - genuinely failed latest run still reads failed
+ok - an unresolvable pipeline-side head does not disqualify the active run
+ok - a terminal run with an unresolvable head is not attributed
+ok - an unbindable live run reports no run instead of its terminal predecessor
+ok - full-status terminal run yields to an unbindable live rerun
+all fm-crew-state tests passed
+fm-crew-state exit: 0
+
+-- 3. Shared-lib consumer: tests/fm-teardown.test.sh --
+fm-teardown exit: 0 (all passed)
