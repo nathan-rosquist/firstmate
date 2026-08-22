@@ -440,6 +440,35 @@ EOF
   pass "snapshot includes durable scout reports after teardown"
 }
 
+test_markdown_backlog_title_strips_record_annotations() {
+  local home data out
+  home=$(make_home annotated-titles)
+  data=$TMP_ROOT/annotated-data
+  mkdir -p "$data"
+  cat > "$data/backlog.md" <<EOF
+## Queued
+- [ ] mid-line-annotations - Revisit the Windows build lane (repo: litany) (kind: ship) (hold: time gate: revisit on/after 2026-08-20) (hold-until: 2026-08-20) then re-run the smoke pass
+- [ ] unannotated - Plain title with no annotations at all
+EOF
+  out=$(FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "mid-line-annotations")
+    | .title == "Revisit the Windows build lane then re-run the smoke pass"
+      and .repo == "litany"
+      and .kind == "ship"
+      and .hold_reason == "time gate: revisit on/after 2026-08-20"
+      and .hold_until == "2026-08-20"
+  ' >/dev/null || fail "annotations before trailing prose must leave the title and keep their fields: $out"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "unannotated")
+    | .title == "Plain title with no annotations at all"
+      and .repo == null
+      and .kind == null
+      and .hold_reason == null
+  ' >/dev/null || fail "an unannotated row must pass through unchanged: $out"
+  pass "markdown backlog titles drop record annotations wherever they sit and keep their fields"
+}
+
 test_backlog_tasks_axi_forms_and_overrides() {
   local home data projects fakebin out view
   home=$(make_home overrides)
@@ -811,6 +840,7 @@ test_open_decision_clears_on_keyed_resolution
 test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
+test_markdown_backlog_title_strips_record_annotations
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
