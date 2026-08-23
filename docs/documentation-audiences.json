@@ -393,6 +393,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/windows.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
     },
