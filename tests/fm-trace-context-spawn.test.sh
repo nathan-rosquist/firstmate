@@ -243,7 +243,7 @@ test_enabled_records_and_injects_identical_carrier_before_launch() {
 
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
   status=$?
-  expect_code 0 "$status" "enabled trace-context spawn should succeed"$'\n'"$out"
+  expect_code 0 "$status" "enabled trace-context spawn should succeed"
   assert_contains "$out" "spawned $CASE_ID" "enabled spawn should report success"
   meta="$HOME_DIR/state/$CASE_ID.meta"
 
