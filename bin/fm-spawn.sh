@@ -260,6 +260,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-platform-lib.sh
+. "$SCRIPT_DIR/fm-platform-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1479,6 +1481,10 @@ path_is_ancestor_of() {
   local ancestor=$1 path=$2
   [ -n "$ancestor" ] || return 1
   [ -n "$path" ] || return 1
+  # Normalize both operands so a Windows-native spelling of the same
+  # directory (C:/Users/x vs /c/Users/x) cannot slip past the prefix test.
+  ancestor=$(fm_path_posix "$ancestor")
+  path=$(fm_path_posix "$path")
   [ "$ancestor" != "$path" ] || return 1
   case "$path" in
     "$ancestor"/*) return 0 ;;
@@ -1491,10 +1497,12 @@ validate_firstmate_home_for_spawn() {
   abs_home=$(resolved_existing_dir "$home") || return 1
   abs_active_home=$(resolved_existing_dir "$FM_HOME")
   abs_root=$(resolved_existing_dir "$FM_ROOT")
-  if [ "$abs_home" = "/" ]; then
-    echo "error: secondmate home cannot be the filesystem root: $home" >&2
-    return 1
-  fi
+  case "$abs_home" in
+    /|/[a-z]|/[a-z]/)
+      echo "error: secondmate home cannot be a filesystem or drive root: $home" >&2
+      return 1
+      ;;
+  esac
   if [ "$abs_home" = "$abs_active_home" ]; then
     echo "error: secondmate home cannot be the active firstmate home: $home" >&2
     return 1
@@ -2787,7 +2795,9 @@ spawn_record_traceparent() {
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
-spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# Native go.exe cannot resolve an MSYS /tmp path, so the exported value is
+# converted to the native form; TASK_TMP records and teardown stay POSIX.
+spawn_send_text_line "$T" "export GOTMPDIR=$(fm_path_native "$TASK_TMP/gotmp")"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
