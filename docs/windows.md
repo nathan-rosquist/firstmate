@@ -14,7 +14,8 @@ The reference tmux backend has no native Windows build, so tmux is not an option
 
 Firstmate is an agent distro: a cloned repository of instructions, skills, and helper scripts that turns a general-purpose coding agent into a fleet supervisor.
 You talk to one agent, the first mate, and it dispatches autonomous workers into isolated git worktrees, supervises them to completion, and hands back finished pull requests, approved local merges, or standalone investigation reports.
-There is no application to install, because the clone is the distro; launching a supported agent harness inside it is what instantiates your first mate.
+Firstmate itself has no installer and ships no binary of its own, because the clone is the distro, and launching a supported agent harness inside it is what instantiates your first mate.
+It does depend on separately installed tools, which is what the install section below is for.
 
 [`../README.md`](../README.md) owns the full description and feature list, and [`architecture.md`](architecture.md) owns the architecture.
 This page owns only what Windows changes.
