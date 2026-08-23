@@ -210,6 +210,7 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 
 The compatibility floor is protocol 14.
 The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+Herdr 0.8.2 protocol 20 is separately verified on Windows x86_64 under MSYS2 Git Bash, which is the platform the installer's single 0.8.2 pin exists to serve; that lane's evidence and its Windows-specific fallbacks are recorded under [Windows x86_64](#windows-x86_64).
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -469,7 +470,9 @@ The floor's structural signal is the selected running server's protocol number, 
 | preview-2026-07-29-44b3adb12552 | 0.7.5-preview.2026-07-29-44b3adb12552 | 18 | yes | below |
 | preview-2026-08-04-d78e3d3b5126 | 0.8.0-preview.2026-08-04-d78e3d3b5126 | 19 | yes | above |
 | v0.8.0 | 0.8.0 | 19 | yes | above |
+| v0.8.2 | 0.8.2 | 20 | yes | above |
 
+The 0.8.2 row is the one entry not produced by that macOS aarch64 sweep; its version and protocol were read from the Windows x86_64 asset's own `status --json` under [Windows x86_64](#windows-x86_64), and it is listed here because the installer pins it on every platform.
 No build lacking both fixes reaches protocol 19, and every pre-fix build tops out at 17, so protocol 19 is a safe structural expression of the 0.8.0 floor.
 The one post-fix build below it is a preview that still reports a 0.7.5 version, so it is conservatively treated as below the floor, which costs a preview build its projection and never lets an unfixed build through.
 The 2026-08-05 named-lab cross-version probe started a server from Herdr 0.7.5 and queried it with the installed 0.8.0 client; status reported client version 0.8.0 protocol 19, server version 0.7.5 protocol 17, server running true, and server compatible false.
@@ -607,6 +610,33 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+
+### Windows x86_64
+
+The Windows lane was measured on Windows 11 x86_64 under MSYS2 Git Bash with no WSL, against Herdr 0.8.2 protocol 20 installed by `bin/fm-install-herdr.sh` to `%LOCALAPPDATA%/Programs/herdr-fm/herdr.exe` and deliberately kept off `PATH`, with the pane shell set to Git Bash through `[terminal] default_shell` in `%APPDATA%/herdr/config.toml`.
+Every live suite runs through the same guarded lab helper as the other platforms, and the default session was byte-identical before and after each run.
+
+Observed results: the backend smoke lane reported 13 ok with no presentation-lock warnings, the control smoke lane reported 5 ok clean, the idle-shell proof passed, and a proved pane close removed the shell from the process table.
+
+Four Windows mechanisms differ from the POSIX lane and are each carried by an explicit adapter path rather than by accident:
+
+- Herdr reports a native socket path such as `C:\Users\...\sessions\<name>\herdr.sock`, so the canonical socket resolver folds every spelling through `fm_path_posix` before its absolute test; without that fold, lock-path resolution failed before the namespace was created.
+- The presentation lock namespace cannot be created at mode 700 on a `noacl` NTFS mount, so the mode gate alone is probe-and-accept while the directory, symlink, and owner checks remain unconditional on every platform.
+- Herdr names a Git Bash pane shell `bash.exe`, so one shared normalizer strips a BSD login dash everywhere and strips backslash paths and the `.exe` suffix only under MSYS before the bare-shell comparison.
+- MSYS `ps` supports no `-o` selectors at all, so the process reads are served from `bin/fm-winproc-lib.sh` in native Windows pid space, and signalling uses `/usr/bin/kill -W` by absolute path because the Bash builtin has no `-W`.
+
+`/usr/bin/kill -W` cannot address a purely native process outside the MSYS runtime.
+That is a safety property rather than a gap: the signalling path can never reach a process the adapter did not itself resolve as an MSYS-runtime pane shell.
+
+Two capabilities have no Windows route and degrade to their documented fallbacks.
+`python3` on win32 has no `AF_UNIX`, so the optional event reader and workspace-move helpers exit at their designed clean status instead of raising, and ordering falls back to polling and flat placement.
+`foreground_cwd` is always null and a Git Bash pane's reported cwd does not follow a `cd`, because the tracking that worked under PowerShell came from Herdr's injected prompt wrapper rather than from the pane itself, so `current_path` has no working route on this platform.
+
+That second gap is not cosmetic and is the Windows lane's one open blocker.
+`fm_backend_herdr_current_path` reads `.result.pane.foreground_cwd` and therefore returns empty on every poll, so `fm-spawn.sh`'s worktree-discovery loop never observes the pane leaving the project and refuses after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refuses for the same reason.
+Both refusals are the guard behaving correctly rather than a guard going missing: an unreadable cwd can never be mistaken for a confirmed worktree, so no spawn is recorded against an unverified directory.
+The consequence is that an ordinary Herdr crewmate or scout spawn cannot complete on Windows at all, which is a stronger outcome than the degraded reads above and is not yet resolved.
+Reading the directory from inside the pane, which shares a filesystem with Firstmate, rather than off the terminal, is the candidate route and is not implemented.
 
 ## Zellij
 

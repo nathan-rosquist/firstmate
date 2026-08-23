@@ -1,7 +1,8 @@
 # Herdr runtime backend
 
 Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
-Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0, while protocol-16 features remain gated by availability.
+Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, 0.8.0, and 0.8.2, while protocol-16 features remain gated by availability.
+`bin/fm-install-herdr.sh` pins 0.8.2 on every platform rather than pinning per platform, because 0.8.2 is the earliest stable release carrying a Windows x86_64 asset and it clears every runtime floor on the platforms already verified.
 Default-on presentation spaces have a higher floor of Herdr 0.8.0 for the reason given under [Presentation spaces](#presentation-spaces).
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
@@ -322,6 +323,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate liveness is not implemented.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
+- On Windows, `foreground_cwd` is always null and a pane's own cwd freezes at creation, so the worktree-discovery poll reads nothing and a crewmate or scout spawn refuses rather than recording an unverified directory; [`verification/runtime-backends.md`](verification/runtime-backends.md#windows-x86_64) holds the measurement and the candidate route.
+- On Windows, an unsigned Herdr binary and the absence of `AF_UNIX` in win32 Python leave event ordering on its polling and flat-placement fallbacks.
 
 ## Regression entry points
 
