@@ -3383,23 +3383,23 @@ test_mode_probe_and_relaxation() {
   [ -n "$device" ] || fail "could not stat the mode-probe fixture"
 
   # With modes declared honored, the exact-mode contract is unchanged.
-  ( FM_PR_MODES_HONORED=1 fm_pr_private_file_valid "$file" 600 "$device" ) \
+  ( FM_FS_MODES_HONORED=1 fm_pr_private_file_valid "$file" 600 "$device" ) \
     && fail "mode-honoring validation accepted a 644 private file"
 
   # With modes declared unrepresentable, the same file is accepted...
-  ( FM_PR_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$device" ) \
+  ( FM_FS_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$device" ) \
     || fail "mode-free validation refused a structurally valid file"
 
   # ...while every structural guard still refuses.
   ln "$file" "$state/task-a.pr-poll.extra" || fail "could not create the hardlink fixture"
-  ( FM_PR_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$device" ) \
+  ( FM_FS_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$device" ) \
     && fail "mode-free validation accepted a multi-link file"
   rm -f "$state/task-a.pr-poll.extra"
-  ( FM_PR_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$((device + 1))" ) \
+  ( FM_FS_MODES_HONORED=0 fm_pr_private_file_valid "$file" 600 "$((device + 1))" ) \
     && fail "mode-free validation accepted a foreign device"
   ln -s "$file" "$state/task-a.link" 2>/dev/null || true
   if [ -L "$state/task-a.link" ]; then
-    ( FM_PR_MODES_HONORED=0 fm_pr_private_file_valid "$state/task-a.link" 600 "$device" ) \
+    ( FM_FS_MODES_HONORED=0 fm_pr_private_file_valid "$state/task-a.link" 600 "$device" ) \
       && fail "mode-free validation accepted a symlink"
   fi
 
@@ -3408,10 +3408,10 @@ test_mode_probe_and_relaxation() {
   # as honoring, and a mount that cannot store modes must probe as mode-free.
   chmod 0600 "$file"
   if [ "$(fm_pr_file_mode "$file")" = 600 ]; then
-    fm_pr_fs_honors_modes "$file" \
+    fm_platform_fs_honors_modes "$file" \
       || fail "probe called a mode-honoring filesystem mode-free"
   else
-    if fm_pr_fs_honors_modes "$file"; then
+    if fm_platform_fs_honors_modes "$file"; then
       fail "probe called a mode-free filesystem honoring"
     fi
   fi

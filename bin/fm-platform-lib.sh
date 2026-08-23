@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Path-form conversion between the MSYS (Git Bash) world and native Windows
-# binaries.
+# Where the host filesystem and the MSYS (Git Bash) world disagree with what
+# firstmate's POSIX code assumes: path form, and whether modes are real.
 #
-# ONE owner of that conversion. A Git Bash home speaks POSIX paths (/tmp/x,
-# /c/Users/x) while a native Windows program launched from it resolves only
-# Windows paths (C:/Users/x). Every place firstmate hands a path across that
-# boundary must go through here, so the rule lives in one file rather than
-# being re-derived per call site.
+# ONE owner of each of those questions. Two copies of either rule would drift,
+# and both are the kind of rule that is only exercised on one platform, so the
+# copy nobody runs is the copy that rots.
+#
+# Path form. A Git Bash home speaks POSIX paths (/tmp/x, /c/Users/x) while a
+# native Windows program launched from it resolves only Windows paths
+# (C:/Users/x). Every place firstmate hands a path across that boundary must go
+# through here, so the rule lives in one file rather than being re-derived per
+# call site.
 #
 # WARNING - converting the wrong value is worse than not converting at all.
 # Convert ONLY a value handed to a native, non-MSYS program: go.exe, node.exe,
@@ -24,11 +28,22 @@
 # input is printed unchanged: a partial or empty conversion of a non-empty path
 # is never emitted, because a caller cannot tell that apart from a real answer.
 #
-# Env seam, mainly for tests:
-#   FM_PLATFORM_UNAME  replace `uname -s`, so the MSYS branch can be driven on
-#                      any host.
-# FM_PLATFORM_MSYS caches the probed verdict for this process; empty means the
-# verdict has not been taken yet.
+# Mode bits. Git Bash's default NTFS mounts are noacl: chmod is a silent no-op
+# and every file reports the mount's fixed modes, so any exact-mode contract
+# refuses artifacts that are in fact private and blocks the feature outright.
+# fm_platform_fs_honors_modes answers whether an exact-mode check means anything
+# on a given filesystem, so a caller can keep its structural guards always and
+# apply the mode equality only where a mode can actually be stored.
+#
+# Env seams, mainly for tests:
+#   FM_PLATFORM_UNAME    replace `uname -s`, so the MSYS branch can be driven
+#                        on any host.
+#   FM_FS_MODES_HONORED  override the mode probe: 1 keeps the exact-mode
+#                        contract, 0 declares modes unrepresentable. Unset
+#                        probes the filesystem.
+# FM_PLATFORM_MSYS caches the probed platform verdict for this process, and
+# FM_PLATFORM_MODES_PROBED_* the mode verdict for one directory; empty means
+# the verdict has not been taken yet.
 
 FM_PLATFORM_MSYS=${FM_PLATFORM_MSYS:-}
 
@@ -75,4 +90,46 @@ fm_path_posix() {  # <path>
     fi
   fi
   printf '%s\n' "$path"
+}
+
+# Print the octal mode bits of <path>, or nothing when it cannot be read.
+fm_platform_file_mode() {  # <path>
+  if [ "$(fm_platform_uname)" = Darwin ]; then
+    stat -f '%Lp' "$1" 2>/dev/null
+  else
+    stat -c '%a' "$1" 2>/dev/null
+  fi
+}
+
+# Whether the filesystem holding <path>'s directory actually stores POSIX mode
+# bits. On a noacl mount the Windows user-profile ACL is the privacy boundary
+# instead, and a caller's structural guards (regular file or directory, no
+# symlink, owning uid, device pin, link count) still hold in full.
+# Probed with a throwaway file and cached per directory per process. A probe
+# that cannot run at all reports modes-honored, so an unexpected filesystem
+# keeps the strict contract rather than quietly dropping it.
+FM_PLATFORM_MODES_PROBED_DIR=
+FM_PLATFORM_MODES_PROBED_VERDICT=
+fm_platform_fs_honors_modes() {  # <path-on-target-filesystem>
+  local dir probe_file mode
+  case "${FM_FS_MODES_HONORED:-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  dir=$(dirname "$1")
+  if [ "${FM_PLATFORM_MODES_PROBED_DIR:-}" = "$dir" ]; then
+    [ "${FM_PLATFORM_MODES_PROBED_VERDICT:-}" = honors ]
+    return
+  fi
+  probe_file=$(mktemp "$dir/.fm-mode-probe.XXXXXX" 2>/dev/null) || return 0
+  chmod 0600 "$probe_file" 2>/dev/null
+  mode=$(fm_platform_file_mode "$probe_file")
+  rm -f "$probe_file"
+  FM_PLATFORM_MODES_PROBED_DIR=$dir
+  if [ "$mode" = 600 ]; then
+    FM_PLATFORM_MODES_PROBED_VERDICT=honors
+    return 0
+  fi
+  FM_PLATFORM_MODES_PROBED_VERDICT=ignores
+  return 1
 }

@@ -2142,6 +2142,68 @@ test_kill_refuses_when_presentation_lock_is_unavailable() {
   pass "fm_backend_herdr_kill: unavailable session locks defer every pane close"
 }
 
+test_presentation_lock_namespace_mode_policy() {
+  local dir ns actual
+  dir="$TMP_ROOT/lock-namespace-policy"; mkdir -p "$dir"
+  ns="$dir/namespace"
+  mkdir -m 755 "$ns"
+  actual=$(bash -c '. "$1"; fm_backend_herdr_presentation_lock_namespace_mode "$2"' _ "$ROOT/bin/backends/herdr.sh" "$ns")
+  if [ "$actual" = 700 ]; then
+    fail "the wrong-mode fixture reads back 700, so the strict case proves nothing"
+  fi
+
+  # Strict: an exact-mode filesystem still refuses a namespace that is not 700.
+  if bash -c '
+    . "$1"
+    FM_FS_MODES_HONORED=1 fm_backend_herdr_presentation_lock_namespace_valid "$2"
+  ' _ "$ROOT/bin/backends/herdr.sh" "$ns"; then
+    fail "the strict mode contract accepted a $actual namespace"
+  fi
+
+  # Relaxed: the same namespace is accepted, because on a mount that cannot
+  # store modes the mkdir -m 700 is a silent no-op and 700 is unreachable.
+  bash -c '
+    . "$1"
+    FM_FS_MODES_HONORED=0 fm_backend_herdr_presentation_lock_namespace_valid "$2"
+  ' _ "$ROOT/bin/backends/herdr.sh" "$ns" \
+    || fail "the relaxed mode contract refused a structurally valid namespace"
+
+  # ...while every structural guard still refuses. A symlink to a valid
+  # namespace is not a valid namespace.
+  if ln -s "$ns" "$dir/link" 2>/dev/null && [ -L "$dir/link" ]; then
+    if bash -c '
+      . "$1"
+      FM_FS_MODES_HONORED=0 fm_backend_herdr_presentation_lock_namespace_valid "$2"
+    ' _ "$ROOT/bin/backends/herdr.sh" "$dir/link"; then
+      fail "the relaxed mode contract accepted a symlinked namespace"
+    fi
+  else
+    printf '# skip: this host could not create the symlink fixture\n'
+  fi
+
+  # A plain file is not a namespace either.
+  : > "$dir/regular"
+  if bash -c '
+    . "$1"
+    FM_FS_MODES_HONORED=0 fm_backend_herdr_presentation_lock_namespace_valid "$2"
+  ' _ "$ROOT/bin/backends/herdr.sh" "$dir/regular"; then
+    fail "the relaxed mode contract accepted a regular file as a namespace"
+  fi
+
+  # Foreign owner. Chowning a directory to another user needs root, so this
+  # fakes the EXPECTED uid instead and proves the owner comparison still runs
+  # in the relaxed path; it does not prove behavior against a real foreign dir.
+  if bash -c '
+    . "$1"
+    id() { printf "%s\n" 987654321; }
+    FM_FS_MODES_HONORED=0 fm_backend_herdr_presentation_lock_namespace_valid "$2"
+  ' _ "$ROOT/bin/backends/herdr.sh" "$ns"; then
+    fail "the relaxed mode contract accepted a namespace owned by another uid"
+  fi
+
+  pass "presentation lock namespace: mode equality is probe-scoped, structural guards are not"
+}
+
 test_endpoint_confirmed_gone_gates_on_structured_presence() {
   local out
   out=$(bash -c '
@@ -4505,6 +4567,7 @@ test_kill_emptying_non_focused_uses_pane_death
 test_kill_focused_workspace_stays_plain_close
 test_endpoint_confirmed_gone_gates_on_structured_presence
 test_kill_refuses_when_presentation_lock_is_unavailable
+test_presentation_lock_namespace_mode_policy
 test_projection_seeded_prune_refuses_active_tab
 test_projection_label_builder_uses_corner_and_strips_owner_prefixes
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order

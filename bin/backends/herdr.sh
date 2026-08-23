@@ -86,6 +86,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Whether an exact-mode check means anything on the filesystem holding the
+# presentation lock namespace (bin/fm-platform-lib.sh).
+# shellcheck source=bin/fm-platform-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-platform-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -675,13 +680,20 @@ fm_backend_herdr_presentation_lock_namespace_uid() {
   fi
 }
 
+# The directory, symlink, and owning-uid checks are structural and always
+# apply. The mode equality applies only where the filesystem can store a mode:
+# on a noacl Git Bash mount the `mkdir -m 700` above is a silent no-op and the
+# namespace reports 755 forever, so requiring 700 there makes the lock
+# permanently unacquirable and every presentation close and recovery refuses.
 fm_backend_herdr_presentation_lock_namespace_valid() {
   local dir=$1 expected_uid owner mode
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   expected_uid=$(id -u 2>/dev/null) || return 1
   owner=$(fm_backend_herdr_presentation_lock_namespace_uid "$dir") || return 1
+  [ "$owner" = "$expected_uid" ] || return 1
+  fm_platform_fs_honors_modes "$dir" || return 0
   mode=$(fm_backend_herdr_presentation_lock_namespace_mode "$dir") || return 1
-  [ "$owner" = "$expected_uid" ] && [ "$mode" = 700 ]
+  [ "$mode" = 700 ]
 }
 
 # Resolve the one verified running named-session socket path as an absolute

@@ -121,6 +121,48 @@ for func in fm_path_native fm_path_posix; do
 done
 pass "an empty path converts to nothing and succeeds"
 
+# --- the mode-bit capability probe ------------------------------------------
+#
+# Run in a fresh process per case like everything else here: the probe memoizes
+# one directory's verdict, so a second case in the same shell would be answered
+# from the first case's fixture.
+
+run_lib() {  # <func> <arg>...
+  bash -c '. "$1"; shift; "$@"' _ "$LIB" "$@"
+}
+
+PROBE_DIR="$TMP_ROOT/mode-probe"
+mkdir -p "$PROBE_DIR"
+PROBE_FILE="$PROBE_DIR/artifact"
+printf 'x\n' > "$PROBE_FILE"
+
+FM_FS_MODES_HONORED=1 bash -c '. "$1"; fm_platform_fs_honors_modes "$2"' _ "$LIB" "$PROBE_FILE" \
+  || fail "FM_FS_MODES_HONORED=1 did not force the strict mode contract"
+FM_FS_MODES_HONORED=0 bash -c '. "$1"; fm_platform_fs_honors_modes "$2"' _ "$LIB" "$PROBE_FILE" \
+  && fail "FM_FS_MODES_HONORED=0 did not declare modes unrepresentable"
+pass "the mode probe honors its explicit override in both directions"
+
+# A directory the probe cannot write keeps the strict contract, so an
+# unexpected filesystem never silently drops the mode check.
+run_lib fm_platform_fs_honors_modes "$TMP_ROOT/no-such-dir/artifact" \
+  || fail "an unprobeable directory must keep the strict mode contract"
+pass "a probe that cannot run at all reports modes-honored"
+
+# Platform-adaptive: the unset probe must report what this filesystem actually
+# does. After a real chmod 0600, a mount that stores modes reads 600 back and
+# must probe as honoring; a noacl mount cannot and must probe as mode-free.
+chmod 0600 "$PROBE_FILE"
+PROBE_MODE=$(run_lib fm_platform_file_mode "$PROBE_FILE")
+if [ "$PROBE_MODE" = 600 ]; then
+  run_lib fm_platform_fs_honors_modes "$PROBE_FILE" \
+    || fail "the probe called a mode-honoring filesystem mode-free"
+  pass "on this mode-honoring filesystem the probe reports modes-honored"
+else
+  run_lib fm_platform_fs_honors_modes "$PROBE_FILE" \
+    && fail "the probe called a mode-free filesystem honoring (read back $PROBE_MODE)"
+  pass "on this mode-free filesystem the probe reports modes-ignored (reads $PROBE_MODE)"
+fi
+
 # --- the real host, whichever one this is -----------------------------------
 #
 # The fixtures above prove the branching; this proves the real cygpath contract
