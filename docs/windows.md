@@ -10,6 +10,90 @@ The supported runtime backend on Windows is Herdr.
 The reference tmux backend has no native Windows build, so tmux is not an option here.
 [`herdr-backend.md`](herdr-backend.md) owns that backend's own setup, safety boundaries, and limits, and this page owns only what Windows changes.
 
+## What Firstmate is
+
+Firstmate is an agent distro: a cloned repository of instructions, skills, and helper scripts that turns a general-purpose coding agent into a fleet supervisor.
+You talk to one agent, the first mate, and it dispatches autonomous workers into isolated git worktrees, supervises them to completion, and hands back finished pull requests, approved local merges, or standalone investigation reports.
+There is no application to install, because the clone is the distro; launching a supported agent harness inside it is what instantiates your first mate.
+
+[`../README.md`](../README.md) owns the full description and feature list, and [`architecture.md`](architecture.md) owns the architecture.
+This page owns only what Windows changes.
+
+## Install
+
+### Before you start
+
+- Git for Windows, which provides the Git Bash shell this page assumes and the required `jq`, `perl`, and `unzip`.
+- The GitHub CLI, authenticated with `gh auth login`.
+- A verified primary agent harness; the README's "Recommended harnesses" section owns that choice.
+- `python3` is optional, and affects only the entries under "Supported limits" below.
+
+Herdr, Treehouse, ShellCheck, and actionlint are installed by this repository's own scripts under "Toolchain" below rather than by a package manager.
+
+### Steps
+
+Run every step from Git Bash, not from PowerShell or `cmd`.
+
+1. Clone the repository and pin its line endings.
+
+   ```sh
+   gh auth login
+   git clone https://github.com/kunchenguid/firstmate
+   cd firstmate
+   git config --local core.autocrlf false
+   ```
+
+2. Confirm `MSYS=winsymlinks:sys` is live, using the probe under "The one setting you must get right" below.
+   Nothing else on this page holds if that probe returns empty.
+
+3. Install the pinned tools, under "Toolchain" below, into one directory, and add that directory to `PATH`.
+
+4. Point Herdr's default pane shell at Git Bash, under "Herdr pane shell" below.
+
+5. Select Herdr as the runtime backend by writing `herdr` into `config/backend`.
+   [`configuration.md`](configuration.md) owns that file and every other configuration knob.
+
+### Or hand the setup to Claude Code
+
+Start `claude` in the directory you want the clone to live in, and paste this:
+
+```text
+Set up firstmate on this Windows machine, natively under Git Bash, without WSL.
+Treat docs/windows.md in the cloned repository as the authoritative source and do not improvise around it.
+Clone https://github.com/kunchenguid/firstmate, set core.autocrlf=false locally, and verify MSYS=winsymlinks:sys is live with that page's symlink probe before continuing.
+Install the pinned tools with bin/fm-install-herdr.sh, bin/fm-install-treehouse.sh, bin/fm-install-shellcheck.sh, and bin/fm-install-actionlint.sh into one directory, then tell me the PATH line to add.
+Set Herdr's default pane shell to Git Bash in %APPDATA%/herdr/config.toml, and select the herdr backend in config/backend.
+Stop and ask me before installing anything outside that list.
+Report what you did, what you skipped, and anything that failed.
+```
+
+## Run
+
+Start the session from Git Bash inside the clone.
+
+```sh
+cd firstmate
+claude
+```
+
+Substitute your own harness's launch command; the README owns the per-harness form and the one-time trust step each of them needs.
+
+`AGENTS.md` takes over from there.
+A new session's first act is its own startup check, which reports missing tools, authentication problems, and any work already under way, and asks your consent before installing anything.
+
+Then talk to it in plain language.
+
+```text
+> ahoy! clone my github project xyz and fix the flaky login test
+```
+
+Firstmate clones the project under `projects/`, spawns a worker in its own Herdr tab and its own git worktree, supervises it, and reports the pull request URL when it is ready for you.
+
+Two things differ here from the reference platforms:
+
+- Watch a worker with `bin/fm-peek.sh` and steer it with `bin/fm-send.sh`, because Herdr's `terminal attach` is unsupported on Windows.
+- Keep `MSYS` intact in every session you launch, because a session without it supervises nothing and reports nothing, as described in the next section.
+
 ## The one setting you must get right
 
 Set `MSYS=winsymlinks:sys` in the environment of every Firstmate process.
