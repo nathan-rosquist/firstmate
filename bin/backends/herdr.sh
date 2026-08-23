@@ -708,8 +708,16 @@ fm_backend_herdr_presentation_lock_namespace_valid() {
 # literal path. Single owner for every socket-identity comparison in this
 # adapter (the presentation session lock and the launcher-identity same-session
 # proof both use it).
+# Herdr on Windows reports native socket paths (C:\Users\...\herdr.sock), which
+# the absolute-path test below reads as relative and refuses, so the session
+# lock can never be acquired there. Every spelling is folded to the POSIX form
+# first, exactly because this function is the single identity owner: C:\x, C:/x
+# and /c/x must all collapse to one lock identity. fm_path_posix is the
+# identity function off MSYS, so no other platform changes.
 fm_backend_herdr_canonical_socket_path() {  # <socket-path>
   local socket=$1 sock_dir sock_base
+  [ -n "$socket" ] || return 1
+  socket=$(fm_path_posix "$socket")
   [ -n "$socket" ] || return 1
   case "$socket" in
     /*) ;;
