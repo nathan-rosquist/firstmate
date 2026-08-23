@@ -5,6 +5,9 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-platform-lib.sh"
+
 # bin/fm-harness.sh checks verified ENV markers before ancestry. A suite run
 # from inside Cursor, Claude, Pi, or Grok inherits those markers, which outrank
 # the fake ancestry the detection cases set up. Drop the ambient markers so the
@@ -183,7 +186,7 @@ EOF
 }
 
 test_kimi_launch_then_send_is_verified() {
-  local id rec out rc launch pointer brief_real meta task_tmp
+  local id rec out rc launch pointer brief_real meta task_tmp gotmp_export
   id="kimi-success-z1-$$"
   task_tmp="/tmp/fm-$id"
   KIMI_RUNTIME_TASK_TMP=$task_tmp
@@ -213,7 +216,10 @@ test_kimi_launch_then_send_is_verified() {
   assert_grep 'effort=high' "$meta" "kimi meta did not retain the unsupported effort axis"
   assert_grep "tasktmp=$task_tmp" "$meta" "kimi meta did not record its task temp root"
   assert_present "$task_tmp/gotmp" "kimi spawn did not create its Go temp directory"
-  assert_grep "export GOTMPDIR=$task_tmp/gotmp" "$CASE_DIR/tmux-calls.log" \
+  # fm-spawn hands GOTMPDIR to a native go, so on MSYS the exported value is
+  # the Windows form of this path (bin/fm-platform-lib.sh).
+  gotmp_export="export GOTMPDIR=$(fm_path_native "$task_tmp/gotmp")"
+  assert_grep "$gotmp_export" "$CASE_DIR/tmux-calls.log" \
     "kimi spawn did not export its Go temp directory into the pane"
   assert_grep 'BEGIN FIRSTMATE KIMI TURN-END HOOK' "$HOME_DIR/.kimi-code/config.toml" \
     "kimi spawn did not install its guarded global hook region"
