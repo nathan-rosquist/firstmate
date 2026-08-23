@@ -235,4 +235,64 @@ fi
 [ "$ABSENT_OUT" = LOADED ]   || fail "unexpected output with the bridge absent: $ABSENT_OUT"
 pass "the session-lock library loads and still answers with the bridge absent"
 
+# --- the census: both counts from one snapshot -------------------------------
+#
+# The herdr idle-shell proof asks whether a pane's shell is alone and childless.
+# In table_fixture the shell is a lone leaf and MID_WINPID has exactly one
+# child, which are the two shapes that proof has to tell apart.
+
+CENSUS=$( FM_WINPROC_FORCE=1 FM_WINPROC_TABLE_CMD=table_fixture \
+  fm_winproc_pid_census "$SHELL_WINPID" )
+[ "$CENSUS" = "1 0" ] \
+  || fail "a lone childless pid must census as '1 0', got '$CENSUS'"
+pass "fm_winproc_pid_census reports a lone childless process as '1 0'"
+
+CENSUS=$( FM_WINPROC_FORCE=1 FM_WINPROC_TABLE_CMD=table_fixture \
+  fm_winproc_pid_census "$MID_WINPID" )
+[ "$CENSUS" = "1 1" ] \
+  || fail "a pid with one child must census as '1 1', got '$CENSUS'"
+pass "fm_winproc_pid_census counts a child process"
+
+CENSUS=$( FM_WINPROC_FORCE=1 FM_WINPROC_TABLE_CMD=table_fixture \
+  fm_winproc_pid_census 999999 )
+[ "$CENSUS" = "0 0" ] \
+  || fail "a pid absent from the table must census as '0 0', got '$CENSUS'"
+pass "fm_winproc_pid_census reports an absent pid as '0 0'"
+
+( FM_WINPROC_DISABLE=1 fm_winproc_pid_census "$SHELL_WINPID" >/dev/null 2>&1 ) \
+  && fail "the census must be inert when the bridge is unavailable"
+pass "fm_winproc_pid_census is inert with the bridge unavailable"
+
+( FM_WINPROC_FORCE=1 FM_WINPROC_TABLE_CMD=table_fixture \
+  fm_winproc_pid_census 'not-a-pid' >/dev/null 2>&1 ) \
+  && fail "the census must refuse a non-numeric pid"
+pass "fm_winproc_pid_census refuses a non-numeric pid"
+
+# --- the flush: a deliberate re-observation sees the new truth ----------------
+#
+# Memoization is right for one moment and wrong across an action: a caller that
+# signals a process and then re-asks whether it is gone must not be answered
+# from the snapshot taken before the signal. The three reads below run as direct
+# calls rather than command substitutions, because a substitution's subshell
+# would discard the memo and hide the very staleness this pins.
+
+table_shell_alive() { printf '%s\n' "$SHELL_WINPID $MID_WINPID $SHELL_IMAGE"; }
+table_shell_exited() { printf '%s\n' "$MID_WINPID 1 $SHELL_IMAGE"; }
+
+FLUSH_DIR=$(fm_test_tmproot winproc-flush)
+( export FM_WINPROC_FORCE=1
+  export FM_WINPROC_TABLE_CMD=table_shell_alive
+  fm_winproc_pid_census "$SHELL_WINPID" > "$FLUSH_DIR/first"
+  export FM_WINPROC_TABLE_CMD=table_shell_exited
+  fm_winproc_pid_census "$SHELL_WINPID" > "$FLUSH_DIR/stale"
+  fm_winproc_flush
+  fm_winproc_pid_census "$SHELL_WINPID" > "$FLUSH_DIR/fresh" )
+[ "$(cat "$FLUSH_DIR/first")" = "1 0" ] \
+  || fail "the first census must see the live shell"
+[ "$(cat "$FLUSH_DIR/stale")" = "1 0" ] \
+  || fail "without a flush the memo must still answer from the first snapshot"
+[ "$(cat "$FLUSH_DIR/fresh")" = "0 0" ] \
+  || fail "after a flush the census must see the exited shell, got '$(cat "$FLUSH_DIR/fresh")'"
+pass "fm_winproc_flush drops the memo so a re-observation is genuinely fresh"
+
 echo "# fm-winproc-lib.test.sh: all assertions passed"

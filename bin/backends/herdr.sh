@@ -91,6 +91,14 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-platform-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-platform-lib.sh"
 
+# Windows process facts for the idle-shell proof, whose pids are native Windows
+# pids that MSYS ps cannot address. Sourced when present and gated on
+# fm_winproc_available at every use, so a Linux or macOS home never reaches it.
+# shellcheck source=bin/fm-winproc-lib.sh
+if [ -r "$FM_BACKEND_HERDR_ROOT/bin/fm-winproc-lib.sh" ]; then
+  . "$FM_BACKEND_HERDR_ROOT/bin/fm-winproc-lib.sh"
+fi
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -1153,10 +1161,14 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   case "$shell_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  command -v "$ps_bin" >/dev/null 2>&1 || return 1
+  # MSYS resolves the shell through the Windows process-facts owner instead of
+  # ps, so a missing ps must not stop the close there.
+  if ! fm_platform_is_msys; then
+    command -v "$ps_bin" >/dev/null 2>&1 || return 1
+  fi
   max_attempts=${FM_BACKEND_HERDR_DEATH_CLOSE_POLLS:-40}
   fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$shell_pid" || return 1
-  kill -HUP "$shell_pid" 2>/dev/null || true
+  fm_backend_herdr_signal_shell HUP "$shell_pid"
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
     presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
@@ -1170,7 +1182,7 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   resampled_pid=$(fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id") || return 1
   [ "$resampled_pid" = "$shell_pid" ] || return 1
   fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$shell_pid" || return 1
-  kill -KILL "$shell_pid" 2>/dev/null || true
+  fm_backend_herdr_signal_shell KILL "$shell_pid"
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
     presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
@@ -1181,16 +1193,53 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   return 1
 }
 
+# fm_backend_herdr_shell_basename: reduce a process image name or path to the
+# bare shell name the recognized-shell checks compare against.
+# BSD ps reports comm as argv0, so a login shell arrives as "-zsh"; the leading
+# dash is stripped here for every caller. Windows contributes two more spellings
+# of the same shell: a backslash image path, and the ".exe" suffix that makes
+# herdr report the Git Bash pane shell as "bash.exe" (verified live on 0.8.2).
+# Stripping the suffix only under MSYS keeps a POSIX host's name space exact.
+fm_backend_herdr_shell_basename() {  # <image-name-or-path>
+  local name=$1
+  name=${name#-}
+  name=${name##*/}
+  name=${name##*\\}
+  if fm_platform_is_msys; then
+    name=${name%.exe}
+  fi
+  printf '%s' "$name"
+}
+
+# fm_backend_herdr_signal_shell: send <signal> to the pane's shell <pid>.
+# Under MSYS that pid is a native Windows pid: the bash builtin kill cannot
+# address one at all (verified against a live native pid: "No such process"),
+# and only /usr/bin/kill's -W/--winpid mode can. Verified on the real pane-shell
+# shape - -W -HUP terminates an idle Git Bash pane shell, and -W -KILL escalates
+# past a shell that ignores HUP. A process outside the MSYS runtime is invisible
+# to -W, so this can never signal something the runtime does not own.
+fm_backend_herdr_signal_shell() {  # <signal> <pid>
+  if fm_platform_is_msys; then
+    /usr/bin/kill -W "-$1" "$2" 2>/dev/null || true
+  else
+    kill "-$1" "$2" 2>/dev/null || true
+  fi
+}
+
 # fm_backend_herdr_pid_is_bare_shell: <pid> currently resolves to a bare
 # recognized shell process per <ps-bin>.
-# BSD ps reports comm as argv0, so a login shell arrives as "-zsh"; strip the
-# login dash exactly like the idle-shell proof's argv0 normalization.
+# Under MSYS the pid is a native Windows pid and MSYS ps implements no -o field
+# selection at all, so the image name comes from the Windows process-facts owner
+# in Windows-pid space instead.
 fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
   local comm
-  comm=$("$1" -p "$2" -o comm= 2>/dev/null) || return 1
+  if fm_platform_is_msys; then
+    comm=$(fm_winproc_command "$2" 2>/dev/null) || return 1
+  else
+    comm=$("$1" -p "$2" -o comm= 2>/dev/null) || return 1
+  fi
   comm=$(printf '%s' "$comm" | tr -d '[:space:]')
-  comm=${comm#-}
-  comm=${comm##*/}
+  comm=$(fm_backend_herdr_shell_basename "$comm")
   case "$comm" in sh|bash|zsh|dash|ksh|fish) return 0 ;; esac
   return 1
 }
@@ -1227,7 +1276,7 @@ fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
 # contract and the settle retry.
 fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid foreground_pgid count
-  local process_pid name argv0 shell_name rows stat ps_bin
+  local process_pid name argv0 shell_name rows stat ps_bin census
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -1251,22 +1300,39 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
     | ($process.argv0 // $process.argv[0])
     | select(type == "string" and length > 0)
   ' 2>/dev/null) || return 1
-  shell_name=${name##*/}
-  argv0=${argv0#-}
-  argv0=${argv0##*/}
+  shell_name=$(fm_backend_herdr_shell_basename "$name")
+  argv0=$(fm_backend_herdr_shell_basename "$argv0")
   [ "$argv0" = "$shell_name" ] || return 1
   case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 1 ;; esac
 
-  ps_bin=${FM_HERDR_PS_BIN:-ps}
-  command -v "$ps_bin" >/dev/null 2>&1 || return 1
-  rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null) || return 1
-  printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
-    $1 == shell { found++ }
-    $2 == shell { child++ }
-    END { exit(found == 1 && child == 0 ? 0 : 1) }
-  ' || return 1
-  stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  if fm_platform_is_msys; then
+    # herdr's shell_pid is a native Windows pid. MSYS ps cannot answer for it
+    # twice over: its PID column carries MSYS pids, not Windows ones, so the
+    # comparison would silently cross pid namespaces, and it implements no -o
+    # field selection at all. One census keeps both counts on a single
+    # snapshot, so they cannot straddle a process exit.
+    #
+    # No state check on this branch. Windows exposes no equivalent of ps's
+    # sleeping/idle state and Win32_Process.ExecutionState is unpopulated, so
+    # there is nothing to read. Little is lost: what stat= catches on a POSIX
+    # host is a shell running something in the foreground, and any such command
+    # is itself a child process, which the no-child count below already
+    # refuses. The lone-row, no-child, and recognized-shell proofs all still
+    # hold.
+    census=$(fm_winproc_pid_census "$shell_pid" 2>/dev/null) || return 1
+    [ "$census" = "1 0" ] || return 1
+  else
+    ps_bin=${FM_HERDR_PS_BIN:-ps}
+    command -v "$ps_bin" >/dev/null 2>&1 || return 1
+    rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null) || return 1
+    printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
+      $1 == shell { found++ }
+      $2 == shell { child++ }
+      END { exit(found == 1 && child == 0 ? 0 : 1) }
+    ' || return 1
+    stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
+    case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  fi
   printf '%s\n' "$shell_pid"
 }
 
