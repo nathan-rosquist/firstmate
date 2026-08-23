@@ -29,9 +29,9 @@
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
-#   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   or herdr), sends the endpoint into the recorded worktree and refuses if a
+#   backend that can report a live path shows it elsewhere, and clears the
+#   previous harness's per-task wiring before arming the new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -48,8 +48,8 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
+#   terminal, so ship/scout Orca spawns do not lease a treehouse worktree; cmux
+#   is a session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
@@ -674,6 +674,8 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_LEASE_ABORT_RETURN=0
+SPAWN_LEASE_PATH=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -692,8 +694,31 @@ parse_orca_worktree_result() {
   fi
 }
 
+# A treehouse lease is durable: it survives with no process inside the worktree
+# and is never handed out again by a later get or reclaimed by prune. So an
+# aborted spawn that leased one and never reached the point where the task record
+# owns it must hand it back here, or that pool slot is burned for good. Warn
+# rather than fail: the abort's own status is the one worth reporting, and a
+# rollback that cannot run is still information the captain needs.
+spawn_return_lease() {
+  local path=$SPAWN_LEASE_PATH
+  SPAWN_LEASE_ABORT_RETURN=0
+  [ -n "$path" ] || return 0
+  if ! command -v treehouse >/dev/null 2>&1; then
+    echo "warning: could not return the leased worktree $path after the aborted spawn of $ID; treehouse command not found" >&2
+    return 0
+  fi
+  ( cd "$PROJ_ABS" && treehouse return --force "$path" >/dev/null ) || {
+    echo "warning: could not return the leased worktree $path after the aborted spawn of $ID; the lease may still be held" >&2
+    return 0
+  }
+}
+
 spawn_abort_cleanup() {
   local status=$?
+  if [ "$SPAWN_LEASE_ABORT_RETURN" = 1 ]; then
+    spawn_return_lease
+  fi
   if [ "$RELAUNCH_REPLACEMENT_PENDING" = 1 ] \
      && [ "$SPAWN_META_PUBLISH_STARTED" = 1 ] \
      && [ -n "$SPAWN_META_TMP" ] \
@@ -2144,6 +2169,53 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 
+# spawn_send_worktree_cd <source> <worktree>: send the endpoint into <worktree>.
+# Unlike the confirmation below, this is a hard gate: a send that the backend
+# reports as failed is a concrete error, not an unanswerable question, and
+# proceeding would launch the agent wherever the endpoint happens to be.
+spawn_send_worktree_cd() {  # <source> <worktree>
+  local source=$1 worktree=$2
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$worktree")" && return 0
+  echo "error: could not send the endpoint for $ID into the worktree '$worktree' after $source; refusing to launch an agent outside the copy holding its work. Inspect target $T" >&2
+  return 1
+}
+
+# spawn_confirm_pane_worktree <source> <worktree>: BEST-EFFORT confirmation that
+# the pane's shell arrived in <worktree> after the `cd` sent to it.
+#
+# It is deliberately not a gate on its own. The worktree is acquired and
+# validated against the filesystem before this runs, and every backend's
+# current-path read is optional capability: Herdr on Windows reports null
+# forever, so an empty read is "this platform cannot answer", not "the pane is
+# somewhere else". Empty therefore proceeds. A NON-empty read is a real answer
+# and must agree with the worktree, physically resolved on both sides the way
+# every other path comparison in this script is, or the spawn refuses rather
+# than launching an agent outside the copy holding its work.
+#
+# The agent-side backstop for the platforms that cannot answer is the ship
+# brief's own isolation assertion (bin/fm-brief.sh), which stops the worker if
+# it starts in the primary checkout. The wait is short because a backend that
+# can answer answers almost immediately, and one that cannot never will.
+spawn_confirm_pane_worktree() {  # <source> <worktree> <worktree-label>
+  local source=$1 worktree=$2 label=$3 wt_real seen last='' i=0
+  local max=${FM_SPAWN_PANE_CONFIRM_POLLS:-10} interval=${FM_SPAWN_PANE_CONFIRM_INTERVAL:-0.5}
+  wt_real=$(real_path_or_raw "$worktree")
+  while [ "$i" -lt "$max" ]; do
+    seen=$(spawn_current_path "$WT_TARGET" || true)
+    if [ -n "$seen" ]; then
+      [ "$(real_path_or_raw "$seen")" = "$wt_real" ] && return 0
+      # A disagreeing read is not yet a verdict: the pane may simply not have run
+      # the `cd` yet. Keep the last one and let the loop settle.
+      last=$seen
+    fi
+    i=$((i + 1))
+    [ "$i" -ge "$max" ] || sleep "$interval"
+  done
+  [ -z "$last" ] && return 0
+  echo "error: after $source the endpoint for $ID stayed in '$last', not its $label '$worktree'; refusing to launch an agent outside the copy holding its work. Inspect target $T" >&2
+  return 1
+}
+
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
@@ -2204,69 +2276,55 @@ kimi_spawn_fail() {  # <detail>
 
 if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
-  # proven instead is that the adopted endpoint's shell is actually sitting in
-  # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
-  relaunch_wt_real=$(real_path_or_raw "$WT")
-  relaunch_seen=
-  for _ in $(seq 1 10); do
-    relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-    sleep 0.5
-  done
-  if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
-    echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
-    exit 1
-  fi
+  # proven instead is that the adopted endpoint's shell starts in that worktree,
+  # so the replacement agent runs where the work is rather than wherever the pane
+  # happened to drift. The `cd` is what makes that true; the read-back below only
+  # confirms it, and is best-effort for the same reason the acquisition path's is
+  # (see spawn_confirm_pane_worktree).
+  spawn_send_worktree_cd relaunch "$WT" || exit 1
+  spawn_confirm_pane_worktree relaunch "$WT" 'recorded worktree' || exit 1
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
+  # Acquire the worktree in firstmate's OWN shell rather than discovering it by
+  # reading the pane's cwd back off the terminal. `treehouse get --lease` is
+  # non-interactive, opens no subshell, and prints only the worktree's absolute
+  # path on stdout, so the path is known here before the pane is told anything.
+  # The pane-reading alternative depended on a backend that can report a live
+  # foreground cwd, which Herdr on Windows cannot: `foreground_cwd` is always
+  # null there and a Git Bash pane's own cwd freezes at creation, so no number of
+  # polls ever observed the pane leaving the project and every crewmate and scout
+  # spawn refused (docs/verification/runtime-backends.md "Windows x86_64").
   #
-  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
-  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
-  # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
-  # below (it resolves to a real, distinct worktree top-level too), so accepting it
-  # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to agree on the same non-project path before accepting it;
-  # a mismatch just becomes the new candidate rather than resetting the wait, so a
-  # pane that is already settled by the first real read only costs the one existing
-  # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate=""
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ]; then
-      p_real=$(real_path_or_raw "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
-        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-          WT="$p"
-          break
-        fi
-        candidate="$p_real"
-      else
-        candidate=""
-      fi
-    else
-      candidate=""
-    fi
-    sleep 1
-  done
+  # A lease is durable: treehouse keeps the worktree reserved with no process
+  # inside it and never hands it out again until it is returned, so every failure
+  # path between here and the point the task record owns the worktree must return
+  # it or a pool slot is burned permanently. SPAWN_LEASE_ABORT_RETURN arms that
+  # rollback on the existing EXIT trap.
+  WT=$( (cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") ) || WT=
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: treehouse get --lease did not lease a worktree for $ID in '$PROJ_ABS'; refusing to launch without an isolated copy" >&2
     exit 1
   fi
+  # Measured on Windows: treehouse prints a NATIVE path with backslashes
+  # (C:\Users\...\.treehouse\...). Left raw it would fail every `cd` and every
+  # physical-path comparison below, and would be recorded in a spelling
+  # teardown cannot match. Fold it to one identity at the single point of
+  # capture, exactly as the herdr canonical socket path is folded, so no
+  # downstream consumer ever sees a second spelling. Identity off MSYS, so the
+  # POSIX platforms are unaffected. `treehouse return --force` accepts this
+  # form, which is what the rollback below hands back.
+  WT=$(fm_path_posix "$WT")
+  SPAWN_LEASE_ABORT_RETURN=1
+  SPAWN_LEASE_PATH=$WT
 
-  validate_spawn_worktree "treehouse get" "$T"
+  # The isolation guarantee. It reads the filesystem, never the terminal, so it
+  # is unchanged by where the path came from and works on every platform.
+  validate_spawn_worktree "treehouse get --lease" "$T"
+
+  # Put the pane where the work is. The agent is launched from this shell, so it
+  # must arrive before the launch command below.
+  spawn_send_worktree_cd "treehouse get --lease" "$WT" || exit 1
+  spawn_confirm_pane_worktree "treehouse get --lease" "$WT" 'leased worktree' || exit 1
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
@@ -2712,6 +2770,13 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+# The published record now names this worktree, so the task owns it and
+# bin/fm-teardown.sh's own guarded return is the only thing that may hand it
+# back. Disarming here rather than after the launch is deliberate: returning a
+# worktree that state/<id>.meta still points at would hard-reset it and put it
+# back in the pool under a record that still claims it, which is the same
+# boundary the orca worktree cleanup above uses.
+SPAWN_LEASE_ABORT_RETURN=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

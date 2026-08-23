@@ -632,11 +632,13 @@ Two capabilities have no Windows route and degrade to their documented fallbacks
 `python3` on win32 has no `AF_UNIX`, so the optional event reader and workspace-move helpers exit at their designed clean status instead of raising, and ordering falls back to polling and flat placement.
 `foreground_cwd` is always null and a Git Bash pane's reported cwd does not follow a `cd`, because the tracking that worked under PowerShell came from Herdr's injected prompt wrapper rather than from the pane itself, so `current_path` has no working route on this platform.
 
-That second gap is not cosmetic and is the Windows lane's one open blocker.
-`fm_backend_herdr_current_path` reads `.result.pane.foreground_cwd` and therefore returns empty on every poll, so `fm-spawn.sh`'s worktree-discovery loop never observes the pane leaving the project and refuses after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refuses for the same reason.
-Both refusals are the guard behaving correctly rather than a guard going missing: an unreadable cwd can never be mistaken for a confirmed worktree, so no spawn is recorded against an unverified directory.
-The consequence is that an ordinary Herdr crewmate or scout spawn cannot complete on Windows at all, which is a stronger outcome than the degraded reads above and is not yet resolved.
-Reading the directory from inside the pane, which shares a filesystem with Firstmate, rather than off the terminal, is the candidate route and is not implemented.
+That second gap used to block every crewmate and scout spawn on this platform, and is resolved by no longer acquiring the worktree through the terminal.
+`fm_backend_herdr_current_path` reads `.result.pane.foreground_cwd` and therefore returned empty on every poll, so the former worktree-discovery loop never observed the pane leaving the project and refused after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refused for the same reason.
+Both refusals were the guard behaving correctly rather than a guard going missing: an unreadable cwd can never be mistaken for a confirmed worktree, so no spawn was recorded against an unverified directory.
+`fm-spawn.sh` now runs `treehouse get --lease --lease-holder <task-id>` in its own shell, which is non-interactive, opens no subshell, and prints only the worktree's absolute path to stdout, and then sends the pane a plain `cd` into that already-known path.
+The isolation guarantee is unchanged because `validate_spawn_worktree` reads the filesystem rather than the terminal, and the durable lease is returned on every failure path until the published task record owns the worktree.
+The pane-arrival read is now a bounded best-effort confirmation: a non-empty path must resolve to the leased worktree or the spawn refuses, while an empty read means this platform cannot answer and the ship brief's own isolation assertion is the agent-side backstop.
+The measured facts above are unchanged, so `current_path` still has no working route on Windows; it is simply no longer on the path that acquires a worktree.
 
 ## Zellij
 
@@ -665,7 +667,7 @@ tests/fm-backend-zellij.test.sh
 tests/fm-backend-zellij-smoke.test.sh
 ```
 
-The real lifecycle smoke proved spawn, metadata, nested-subshell worktree discovery, send, capture, unlanded-work refusal, approved local landing, exact tab cleanup, and session cleanup without retaining task-specific ids or branch names here.
+The real lifecycle smoke proved spawn, metadata, nested-subshell cwd reads, send, capture, unlanded-work refusal, approved local landing, exact tab cleanup, and session cleanup without retaining task-specific ids or branch names here.
 
 ## Orca
 

@@ -322,7 +322,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate liveness is not implemented.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
-- On Windows, `foreground_cwd` is always null and a pane's own cwd freezes at creation, so the worktree-discovery poll reads nothing and a crewmate or scout spawn refuses rather than recording an unverified directory; [`verification/runtime-backends.md`](verification/runtime-backends.md#windows-x86_64) holds the measurement and the candidate route.
+- On Windows, `foreground_cwd` is always null and a pane's own cwd freezes at creation, so `current_path` reads nothing there; spawn leases the worktree directly instead of reading it off the pane, and the arrival read degrades to a best-effort confirmation, so a crewmate or scout spawn still completes; [`verification/runtime-backends.md`](verification/runtime-backends.md#windows-x86_64) holds the measurement.
 - On Windows, an unsigned Herdr binary and the absence of `AF_UNIX` in win32 Python leave event ordering on its polling and flat-placement fallbacks.
 
 ## Regression entry points
