@@ -2204,6 +2204,84 @@ test_presentation_lock_namespace_mode_policy() {
   pass "presentation lock namespace: mode equality is probe-scoped, structural guards are not"
 }
 
+test_canonical_socket_path_collapses_native_spellings() {
+  local dir fake win_bs win_fs posix out_bs out_fs out_posix rc
+  dir="$TMP_ROOT/socket-canonical"; mkdir -p "$dir"
+  win_bs='C:\fixture\herdr\sessions\s1\herdr.sock'
+  win_fs='C:/fixture/herdr/sessions/s1/herdr.sock'
+  posix='/c/fixture/herdr/sessions/s1/herdr.sock'
+
+  # A mini-cygpath that really folds the drive spellings, so the collapse this
+  # asserts is a translation rather than a fixture returning one constant.
+  # Absolute interpreter: this case keeps the real PATH, but a fixture that
+  # silently failed to launch would read as a passing identity conversion.
+  fake="$dir/fakebin"; mkdir -p "$fake"
+  cat > "$fake/cygpath" <<'SH'
+#!/bin/sh
+p=$(printf '%s' "$3" | tr '\\' '/')
+case "$p" in
+  [A-Za-z]:/*)
+    printf '/%s%s\n' \
+      "$(printf '%s' "$p" | cut -c1 | tr 'A-Z' 'a-z')" \
+      "$(printf '%s' "$p" | cut -c3-)"
+    ;;
+  *) printf '%s\n' "$p" ;;
+esac
+SH
+  chmod +x "$fake/cygpath"
+
+  # Seam-driven, so this runs everywhere and not only on Git Bash.
+  canon() {  # <socket>
+    PATH="$fake:$PATH" FM_PLATFORM_UNAME=MINGW64_NT-fixture bash -c '
+      . "$1/bin/backends/herdr.sh"
+      fm_backend_herdr_canonical_socket_path "$2"
+    ' _ "$ROOT" "$1"
+  }
+  out_bs=$(canon "$win_bs") || fail "the backslash socket spelling was refused under a fake MSYS"
+  out_fs=$(canon "$win_fs") || fail "the drive socket spelling was refused under a fake MSYS"
+  out_posix=$(canon "$posix") || fail "the POSIX socket spelling was refused under a fake MSYS"
+  [ "$out_bs" = "$out_posix" ] \
+    || fail "backslash and POSIX spellings are two identities: '$out_bs' vs '$out_posix'"
+  [ "$out_fs" = "$out_posix" ] \
+    || fail "drive and POSIX spellings are two identities: '$out_fs' vs '$out_posix'"
+  case "$out_posix" in
+    /*) ;;
+    *) fail "the canonical socket identity is not absolute: '$out_posix'" ;;
+  esac
+
+  # The relative and empty refusals must survive the conversion.
+  rc=0
+  canon 'relative/herdr.sock' >/dev/null 2>&1 || rc=$?
+  [ "$rc" != 0 ] || fail "a relative socket path was accepted after conversion"
+  rc=0
+  canon '' >/dev/null 2>&1 || rc=$?
+  [ "$rc" != 0 ] || fail "an empty socket path was accepted after conversion"
+
+  # The real host, whichever one this is. On Git Bash the native spelling Herdr
+  # actually emits must collapse onto the POSIX one; elsewhere fm_path_posix is
+  # the identity, so a drive-lettered path is still refused as relative.
+  case "$(uname -s)" in
+    MINGW*|MSYS*)
+      if command -v cygpath >/dev/null 2>&1; then
+        out_bs=$(bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_canonical_socket_path "$2"' _ "$ROOT" "$win_bs") \
+          || fail "real cygpath: the backslash spelling Herdr emits was refused"
+        out_posix=$(bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_canonical_socket_path "$2"' _ "$ROOT" "$posix") \
+          || fail "real cygpath: the POSIX socket spelling was refused"
+        [ "$out_bs" = "$out_posix" ] \
+          || fail "real cygpath: native and POSIX spellings are two lock identities: '$out_bs' vs '$out_posix'"
+      fi
+      ;;
+    *)
+      rc=0
+      bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_canonical_socket_path "$2"' _ "$ROOT" "$win_bs" \
+        >/dev/null 2>&1 || rc=$?
+      [ "$rc" != 0 ] || fail "off MSYS a drive-lettered socket path must still be refused"
+      ;;
+  esac
+
+  pass "fm_backend_herdr_canonical_socket_path: every spelling of one socket is one lock identity"
+}
+
 test_endpoint_confirmed_gone_gates_on_structured_presence() {
   local out
   out=$(bash -c '
@@ -4568,6 +4646,7 @@ test_kill_focused_workspace_stays_plain_close
 test_endpoint_confirmed_gone_gates_on_structured_presence
 test_kill_refuses_when_presentation_lock_is_unavailable
 test_presentation_lock_namespace_mode_policy
+test_canonical_socket_path_collapses_native_spellings
 test_projection_seeded_prune_refuses_active_tab
 test_projection_label_builder_uses_corner_and_strips_owner_prefixes
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order
