@@ -17,6 +17,11 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# Whether an exact-mode check means anything on the target filesystem is a
+# platform question, not a PR question, and bin/fm-platform-lib.sh owns it.
+# shellcheck source=bin/fm-platform-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-platform-lib.sh"
+
 FM_PR_PROVIDER=
 FM_PR_URL=
 FM_PR_HOST=
@@ -263,46 +268,16 @@ fm_pr_sha256() {
   fi
 }
 
-# Whether the filesystem holding <path>'s directory actually stores POSIX mode
-# bits. Git Bash's default NTFS mounts are noacl: chmod is a silent no-op and
-# every file reports the mount's fixed modes, so an exact-mode contract would
-# refuse every private artifact and permanently block checks, PR polls, and
-# Relay on Windows. On such a mount the Windows user-profile ACL is the privacy
-# boundary, and the structural guards below (regular file, no symlink, device
-# pin, link count 1) still hold in full.
-# Probed with a throwaway file and cached per directory per process; a probe
-# that cannot run at all reports modes-honored so the strict contract stays.
-# FM_PR_MODES_HONORED=0|1 overrides the probe, mainly for tests.
-FM_PR_MODES_PROBED_DIR=
-FM_PR_MODES_PROBED_VERDICT=
-fm_pr_fs_honors_modes() {  # <path-on-target-filesystem>
-  local dir probe mode
-  case "${FM_PR_MODES_HONORED:-}" in
-    0) return 1 ;;
-    1) return 0 ;;
-  esac
-  dir=$(dirname "$1")
-  if [ "${FM_PR_MODES_PROBED_DIR:-}" = "$dir" ]; then
-    [ "${FM_PR_MODES_PROBED_VERDICT:-}" = honors ]
-    return
-  fi
-  probe=$(mktemp "$dir/.fm-mode-probe.XXXXXX" 2>/dev/null) || return 0
-  chmod 0600 "$probe" 2>/dev/null
-  mode=$(fm_pr_file_mode "$probe")
-  rm -f "$probe"
-  FM_PR_MODES_PROBED_DIR=$dir
-  if [ "$mode" = 600 ]; then
-    FM_PR_MODES_PROBED_VERDICT=honors
-    return 0
-  fi
-  FM_PR_MODES_PROBED_VERDICT=ignores
-  return 1
-}
-
+# The exact-mode contract applies only where a mode can actually be stored
+# (fm_platform_fs_honors_modes). On a noacl Git Bash mount chmod is a silent
+# no-op, so requiring an exact mode would refuse every private artifact and
+# permanently block checks, PR polls, and Relay on Windows; there the Windows
+# user-profile ACL is the privacy boundary and the structural guards below
+# (regular file, no symlink, device pin, link count 1) still hold in full.
 fm_pr_private_file_valid() {
   local path=$1 mode=$2 device=$3
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
-  if fm_pr_fs_honors_modes "$path"; then
+  if fm_platform_fs_honors_modes "$path"; then
     [ "$(fm_pr_file_mode "$path")" = "$mode" ] || return 1
   fi
   [ "$(fm_pr_file_device "$path")" = "$device" ] || return 1
