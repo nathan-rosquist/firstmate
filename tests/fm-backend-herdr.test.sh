@@ -4723,3 +4723,123 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+
+# --- the Windows branches of the idle-shell proof and the pane-death close ----
+#
+# herdr reports a native Windows pid for the pane shell, so under MSYS the proof
+# and the close cannot use ps at all: its PID column carries MSYS pids, and it
+# implements no -o field selection. These pin the branch that reads Windows
+# process facts instead, driven through the documented platform and bridge
+# seams so they assert the same way on Linux CI.
+
+# One MSYS-forced sample against a canned process-info response. <census> is
+# what the Windows process-facts bridge reports for the shell pid.
+_msys_idle_sample() {  # <census>
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=MINGW64_NT-10.0-26200
+    FM_PLATFORM_MSYS=
+    FAKE_CENSUS=$1
+    fm_backend_herdr_cli() {
+      printf "%s" "{\"result\":{\"type\":\"pane_process_info\",\"process_info\":{\"pane_id\":\"w1:p2\",\"shell_pid\":71064,\"foreground_process_group_id\":71064,\"foreground_processes\":[{\"pid\":71064,\"name\":\"bash.exe\",\"argv0\":\"C:/Program Files/Git/usr/bin/bash.exe\"}]}}}"
+    }
+    fm_winproc_pid_census() { printf "%s\n" "$FAKE_CENSUS"; }
+    fm_backend_herdr_pane_idle_shell_sample lab w1:p2
+  ' "$ROOT" "$1"
+}
+
+test_shell_basename_strips_the_exe_suffix_only_under_msys() {
+  local msys posix
+  msys=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=MINGW64_NT-10.0-26200; FM_PLATFORM_MSYS=
+    printf "%s,%s,%s" \
+      "$(fm_backend_herdr_shell_basename "C:\\Program Files\\Git\\usr\\bin\\bash.exe")" \
+      "$(fm_backend_herdr_shell_basename "/usr/bin/bash")" \
+      "$(fm_backend_herdr_shell_basename "-zsh")"' "$ROOT")
+  [ "$msys" = "bash,bash,zsh" ] \
+    || fail "under MSYS every spelling of the shell must reduce to its bare name, got '$msys'"
+  posix=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=Linux; FM_PLATFORM_MSYS=
+    printf "%s,%s" \
+      "$(fm_backend_herdr_shell_basename "/usr/bin/bash")" \
+      "$(fm_backend_herdr_shell_basename "bash.exe")"' "$ROOT")
+  [ "$posix" = "bash,bash.exe" ] \
+    || fail "a POSIX host must keep its name space exact and not strip .exe, got '$posix'"
+  pass "fm_backend_herdr_shell_basename: .exe is stripped only where Windows puts it there"
+}
+
+test_pid_is_bare_shell_reads_windows_process_facts_under_msys() {
+  local rc
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=MINGW64_NT-10.0-26200; FM_PLATFORM_MSYS=
+    fm_winproc_command() { printf "%s\n" "/usr/bin/bash"; }
+    fm_backend_herdr_pid_is_bare_shell /nonexistent-ps 71064' "$ROOT"; rc=$?
+  [ "$rc" = 0 ] \
+    || fail "under MSYS the shell name must come from the Windows bridge, not ps (rc $rc)"
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=MINGW64_NT-10.0-26200; FM_PLATFORM_MSYS=
+    fm_winproc_command() { printf "%s\n" "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"; }
+    fm_backend_herdr_pid_is_bare_shell /nonexistent-ps 71064' "$ROOT"; rc=$?
+  [ "$rc" = 1 ] \
+    || fail "a PowerShell pane shell must not pass the recognized-shell check (rc $rc)"
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    FM_PLATFORM_UNAME=MINGW64_NT-10.0-26200; FM_PLATFORM_MSYS=
+    fm_winproc_command() { return 1; }
+    fm_backend_herdr_pid_is_bare_shell /nonexistent-ps 71064' "$ROOT"; rc=$?
+  [ "$rc" = 1 ] \
+    || fail "an unreadable Windows image must refuse rather than pass (rc $rc)"
+  pass "fm_backend_herdr_pid_is_bare_shell: MSYS resolves the shell in Windows-pid space"
+}
+
+test_idle_shell_sample_msys_requires_a_lone_childless_shell() {
+  local out rc
+  out=$(_msys_idle_sample "1 0"); rc=$?
+  [ "$rc" = 0 ] && [ "$out" = 71064 ] \
+    || fail "a lone childless Windows shell must satisfy the proof (rc $rc, out '$out')"
+  _msys_idle_sample "1 1" >/dev/null 2>&1 \
+    && fail "a shell with a child process must fail the proof"
+  _msys_idle_sample "2 0" >/dev/null 2>&1 \
+    && fail "an ambiguous pid appearing twice must fail the proof"
+  _msys_idle_sample "0 0" >/dev/null 2>&1 \
+    && fail "a shell absent from the process table must fail the proof"
+  pass "fm_backend_herdr_pane_idle_shell_sample: the MSYS branch demands exactly one childless row"
+}
+
+# A real-host case: the signal that ends a pane shell has no fixture worth
+# trusting, because what is being pinned is whether this platform's kill can
+# address a native Windows pid at all. It runs only where that question exists.
+test_signal_shell_terminates_a_real_msys_shell() {
+  local sleeper winpid alive
+  if ! bash -c '. "$0/bin/fm-platform-lib.sh"; fm_platform_is_msys' "$ROOT"; then
+    pass "fm_backend_herdr_signal_shell: real-host MSYS termination (skipped off Windows)"
+    return 0
+  fi
+  sleeper="$TMP_ROOT/signal-sleeper.sh"
+  printf '#!/usr/bin/env bash\nsleep 120\n' > "$sleeper"
+  chmod +x "$sleeper"
+  winpid=$(powershell -NoProfile -Command \
+    "(Start-Process -FilePath 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' -ArgumentList '$(cygpath -w "$sleeper")' -PassThru -WindowStyle Hidden).Id" \
+    2>/dev/null | tr -d '\r')
+  case "$winpid" in
+    ''|*[!0-9]*) fail "could not spawn a disposable MSYS shell to signal" ;;
+  esac
+  sleep 2
+  bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_signal_shell HUP "$1"' "$ROOT" "$winpid"
+  sleep 2
+  alive=$(tasklist //FI "PID eq $winpid" //NH 2>/dev/null | awk -v p="$winpid" '$2==p{print "yes"}')
+  if [ "$alive" = yes ]; then
+    taskkill //PID "$winpid" //F >/dev/null 2>&1
+    fail "fm_backend_herdr_signal_shell HUP did not terminate a real MSYS pane shell"
+  fi
+  pass "fm_backend_herdr_signal_shell: HUP terminates a real MSYS shell by its Windows pid"
+}
+
+test_shell_basename_strips_the_exe_suffix_only_under_msys
+test_pid_is_bare_shell_reads_windows_process_facts_under_msys
+test_idle_shell_sample_msys_requires_a_lone_childless_shell
+test_signal_shell_terminates_a_real_msys_shell

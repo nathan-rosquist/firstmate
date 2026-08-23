@@ -160,6 +160,42 @@ fm_winproc_ppid() {  # <winpid>
   printf '%s\n' "$ppid"
 }
 
+# Drop both memoized snapshots so the next lookup re-reads the live system.
+#
+# Both loaders memoize for a process lifetime, which is right for a caller
+# asking several questions about one moment. A caller that deliberately
+# re-observes a process after acting on it wants the opposite, and a stale
+# snapshot there would report a pid that has already exited as still live.
+# Callers reached through command substitution get a fresh subshell, and so a
+# fresh snapshot, for free; this exists for the ones that do not.
+fm_winproc_flush() {
+  _FM_WINPROC_PS_ROWS=
+  _FM_WINPROC_PS_LOADED=0
+  _FM_WINPROC_TABLE=
+  _FM_WINPROC_TABLE_LOADED=0
+}
+
+# Print "<rows-for-pid> <rows-parented-by-pid>" for Windows pid $1.
+#
+# Both counts come from one snapshot on purpose: taken separately they could
+# straddle a process exit and describe two different moments, which is exactly
+# the ambiguity a caller proving a process is alone and childless must not
+# have. Raw counts, not a verdict - what "alone" and "childless" mean belongs
+# to the caller holding the proof contract.
+fm_winproc_pid_census() {  # <winpid>
+  local winpid=$1
+  fm_winproc_available || return 1
+  case "$winpid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  _fm_winproc_load_table || return 1
+  printf '%s\n' "$_FM_WINPROC_TABLE" | awk -v w="$winpid" '
+    $1 == w { self++ }
+    $2 == w { kids++ }
+    END { print self + 0, kids + 0 }
+  '
+}
+
 # Print the Windows image path recorded for Windows pid $1 by the CIM table.
 #
 # This is the tree-walk counterpart to fm_winproc_command: the ps -W source
