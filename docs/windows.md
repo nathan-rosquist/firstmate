@@ -35,11 +35,14 @@ Herdr, Treehouse, ShellCheck, and actionlint are installed by this repository's 
 
 Run every step from Git Bash, not from PowerShell or `cmd`.
 
-1. Clone the repository and pin its line endings.
+1. Clone the branch that carries this support, and pin its line endings.
+
+   The Windows support described here is not in the upstream repository yet, so a clone of `kunchenguid/firstmate` does not carry it.
+   It lives on the `windows` branch of the fork below.
 
    ```sh
    gh auth login
-   git clone https://github.com/kunchenguid/firstmate
+   git clone -b windows https://github.com/nathan-rosquist/firstmate
    cd firstmate
    git config --local core.autocrlf false
    ```
@@ -61,7 +64,8 @@ Start `claude` in the directory you want the clone to live in, and paste this:
 ```text
 Set up firstmate on this Windows machine, natively under Git Bash, without WSL.
 Treat docs/windows.md in the cloned repository as the authoritative source and do not improvise around it.
-Clone https://github.com/kunchenguid/firstmate, set core.autocrlf=false locally, and verify MSYS=winsymlinks:sys is live with that page's symlink probe before continuing.
+Clone the windows branch specifically: git clone -b windows https://github.com/nathan-rosquist/firstmate - the upstream kunchenguid repository does not carry Windows support yet, so do not substitute it.
+Set core.autocrlf=false locally, and verify MSYS=winsymlinks:sys is live with that page's symlink probe before continuing.
 Install the pinned tools with bin/fm-install-herdr.sh, bin/fm-install-treehouse.sh, bin/fm-install-shellcheck.sh, and bin/fm-install-actionlint.sh into one directory, then tell me the PATH line to add.
 Set Herdr's default pane shell to Git Bash in %APPDATA%/herdr/config.toml, and select the herdr backend in config/backend.
 Stop and ask me before installing anything outside that list.
