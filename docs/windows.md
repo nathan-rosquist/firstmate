@@ -180,6 +180,10 @@ Left alone, a harness slash command such as `/exit` arrives in the pane as `C:/P
 Firstmate suppresses that rewriting for the calls whose payload is literal pane input, and leaves it in place for the calls that genuinely pass paths a native client must receive in native form.
 Nothing is required of you here either.
 
+The Windows `jq` build ends every line it writes with a carriage return.
+A value Firstmate reads as a single line is unharmed, because the shell strips that ending whole; a read of several lines at once keeps a carriage return inside every line but the last, which then travels inside workspace, tab, and pane identifiers.
+Firstmate filters those multi-line reads, so the same bytes come back on Windows as anywhere else.
+
 ## Supported limits
 
 These are current, measured Windows limits rather than defects awaiting a fix.
