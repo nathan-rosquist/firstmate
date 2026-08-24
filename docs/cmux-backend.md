@@ -90,7 +90,8 @@ Capture remains bounded and locally trimmed after `read-screen` becomes availabl
 `current_directory` follows a top-level shell `cd` but not a foreground subshell such as the one an interactive `treehouse get` opens.
 The spawn-time worktree-arrival read therefore sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines, which stays correct for a surface sitting inside such a subshell.
 
-Literal send and Enter are separate calls.
+An ordinary metadata-routed `fm-send.sh` text steer becomes a durable steering-inbox record, and only its best-effort constant doorbell passes through cmux's submit machinery.
+On the typed plane, literal send and Enter are separate calls.
 Enter, Escape, and Ctrl-C are supported.
 The composer verifier is a thin adapter: it captures a bounded plain-text tail and hands it with cmux's capability facts to the fleet-wide classifier in `bin/fm-composer-lib.sh`, which owns every shape, including Claude's borderless `❯` row with its U+00A0 separator.
 `read-screen` is plain text with no cursor primitive, so the shared classifier degrades a glyph row carrying trailing text to `unknown` rather than misreading a harness's own idle suggestion as unsent input.
