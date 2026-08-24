@@ -396,6 +396,23 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
   HERDR_SESSION="$session" herdr "$@" --session "$session"
 }
 
+# fm_backend_herdr_cli_literal: fm_backend_herdr_cli for the calls whose payload
+# is literal pane input rather than anything herdr should resolve. On MSYS the
+# herdr client is a native Windows binary, so Git Bash rewrites arguments it
+# reads as POSIX paths before the exe ever sees them: a harness `/exit` slash
+# command arrives in the pane as `C:/Program Files/Git/exit`, the agent never
+# stops, and the send itself still reports success. Pane input is never a path
+# here, so suppress that conversion for exactly these calls and leave every
+# other herdr call converting normally, because those do pass real paths a
+# native client must receive in native form.
+fm_backend_herdr_cli_literal() {  # <session> <herdr-subcommand-and-args...>
+  if fm_platform_is_msys; then
+    MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 fm_backend_herdr_cli "$@"
+  else
+    fm_backend_herdr_cli "$@"
+  fi
+}
+
 # fm_backend_herdr_tool_check: refuse loudly if herdr or jq is missing.
 fm_backend_herdr_tool_check() {
   command -v herdr >/dev/null 2>&1 || { echo "error: backend=herdr selected but the 'herdr' CLI is not installed (https://herdr.dev) (dual-licensed AGPL-3.0-or-later/commercial)" >&2; return 1; }
@@ -2627,7 +2644,7 @@ fm_backend_herdr_current_path() {  # <target>
 # `pane run` types the command and submits it in one call (verified).
 fm_backend_herdr_send_text_line() {  # <target> <text>
   fm_backend_herdr_target_ready "$1" || return 1
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+  fm_backend_herdr_cli_literal "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
 # fm_backend_herdr_send_literal: send TEXT as literal, UNSUBMITTED input - the
@@ -2636,7 +2653,7 @@ fm_backend_herdr_send_text_line() {  # <target> <text>
 # original guess); it behaves exactly like tmux's `-l` literal send.
 fm_backend_herdr_send_literal() {  # <target> <text>
   fm_backend_herdr_target_ready "$1" || return 1
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+  fm_backend_herdr_cli_literal "$FM_BACKEND_HERDR_SESSION" pane send-text "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
@@ -2662,7 +2679,7 @@ fm_backend_herdr_send_key() {  # <target> <key>
   fm_backend_herdr_target_ready "$1" || return 1
   local key
   key=$(fm_backend_herdr_normalize_key "$2")
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" >/dev/null 2>&1
+  fm_backend_herdr_cli_literal "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" >/dev/null 2>&1
 }
 
 # fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors
