@@ -47,6 +47,12 @@ next=$(( $(cat "$COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
   for a in "$@"; do printf '\x1f%s' "$a"; done
   printf '\n'
 } >> "$LOG"
+if [ -n "${FM_HERDR_ENVLOG:-}" ]; then
+  {
+    printf 'MSYS2_ARG_CONV_EXCL=%s' "${MSYS2_ARG_CONV_EXCL:-}"
+    printf '\n'
+  } >> "$FM_HERDR_ENVLOG"
+fi
 if [ "${1:-}" = status ] && [ "${2:-}" = --json ] && [ "${FM_HERDR_SCRIPT_STATUS:-0}" != 1 ]; then
   printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
   exit 0
@@ -96,6 +102,12 @@ STATE="${FM_FAKE_HERDR_STATE:?}"
   for a in "$@"; do printf '\x1f%s' "$a"; done
   printf '\n'
 } >> "$LOG"
+if [ -n "${FM_HERDR_ENVLOG:-}" ]; then
+  {
+    printf 'MSYS2_ARG_CONV_EXCL=%s' "${MSYS2_ARG_CONV_EXCL:-}"
+    printf '\n'
+  } >> "$FM_HERDR_ENVLOG"
+fi
 
 jq_state() { jq "$@" "$STATE"; }
 save() { local tmp="$STATE.tmp.$$"; cat > "$tmp" && mv "$tmp" "$STATE"; }
@@ -287,6 +299,51 @@ test_cli_helper_sets_env_and_appends_trailing_session_flag() {
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''list'$'\x1f''--session'$'\x1f''fmtest' \
     "fm_backend_herdr_cli did not append a trailing --session <name> flag (the fix for the env-var-alone routing bug)"
   pass "fm_backend_herdr_cli: sets HERDR_SESSION AND appends a trailing --session flag on every call"
+}
+
+# --- fm_backend_herdr_cli_literal: MSYS argument path conversion ------------
+#
+# Git Bash rewrites an argument it reads as a POSIX path before a native Windows
+# exe ever receives it, so an unprotected `/exit` reaches the pane as
+# `C:/Program Files/Git/exit`, the agent never stops, and the send still reports
+# success. These cases drive fm-platform-lib's FM_PLATFORM_UNAME seam so both
+# directions run on any host, and read the fake's opt-in env log because the
+# exclusion is an environment fact about the child process, not part of its argv.
+
+test_msys_literal_send_suppresses_argument_path_conversion() {
+  local dir log resp fb envlog
+  dir="$TMP_ROOT/cli-literal-msys"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; envlog="$dir/envlog"; : > "$log"; : > "$envlog"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_ENVLOG="$envlog" FM_PLATFORM_UNAME=MINGW64_NT-10.0 bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_cli_literal fmtest pane send-text w1:p3 /exit' "$ROOT"
+  expect_code 0 $? "fm_backend_herdr_cli_literal should succeed"
+  assert_contains "$(cat "$envlog")" "MSYS2_ARG_CONV_EXCL=*" "an MSYS literal send must suppress argument path conversion, or a slash command reaches the pane as a Windows path and the agent never acts on it"
+  assert_contains "$(cat "$log")" "/exit" "the literal payload must reach the client verbatim"
+  pass "an MSYS literal send suppresses argument path conversion"
+}
+
+test_msys_ordinary_call_keeps_argument_path_conversion() {
+  local dir log resp fb envlog
+  dir="$TMP_ROOT/cli-literal-msys-other"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; envlog="$dir/envlog"; : > "$log"; : > "$envlog"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_ENVLOG="$envlog" FM_PLATFORM_UNAME=MINGW64_NT-10.0 bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_cli fmtest workspace list' "$ROOT"
+  expect_code 0 $? "fm_backend_herdr_cli should succeed"
+  assert_contains "$(cat "$envlog")" "MSYS2_ARG_CONV_EXCL=" "the fake should have recorded the ordinary call's environment"
+  assert_not_contains "$(cat "$envlog")" "MSYS2_ARG_CONV_EXCL=*" "an ordinary herdr call still passes real paths to a native client and must keep normal conversion"
+  pass "an ordinary MSYS herdr call keeps argument path conversion"
+}
+
+test_non_msys_literal_send_leaves_the_environment_alone() {
+  local dir log resp fb envlog
+  dir="$TMP_ROOT/cli-literal-posix"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; envlog="$dir/envlog"; : > "$log"; : > "$envlog"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_ENVLOG="$envlog" FM_PLATFORM_UNAME=Linux bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_cli_literal fmtest pane send-text w1:p3 /exit' "$ROOT"
+  expect_code 0 $? "fm_backend_herdr_cli_literal should succeed"
+  assert_not_contains "$(cat "$envlog")" "MSYS2_ARG_CONV_EXCL=*" "a POSIX host has no argument path conversion to suppress"
+  assert_contains "$(cat "$log")" "/exit" "the literal payload must reach the client verbatim"
+  pass "a non-MSYS literal send leaves the environment alone"
 }
 
 # --- launcher_identity: the exact workspace a worker must be placed in -------
@@ -4572,6 +4629,9 @@ test_workspace_label_secondmate_marker_trims_whitespace
 test_workspace_label_empty_marker_falls_back_to_primary
 test_workspace_label_different_secondmates_get_different_labels
 test_cli_helper_sets_env_and_appends_trailing_session_flag
+test_msys_literal_send_suppresses_argument_path_conversion
+test_msys_ordinary_call_keeps_argument_path_conversion
+test_non_msys_literal_send_leaves_the_environment_alone
 test_launcher_identity_absent_without_a_herdr_pane
 test_launcher_identity_absent_when_herdr_env_alone_is_set
 test_launcher_identity_resolves_the_exact_pane_tab_and_workspace

@@ -174,6 +174,12 @@ A Herdr pane opens that shell without login mode, so `/etc/profile` never runs a
 Firstmate exports its own `PATH` into each pane before the launch command for that reason; without it `env`, every `#!/usr/bin/env bash` script, and the agent binary itself are unresolvable there.
 Nothing is required of you here beyond starting Firstmate from a normal Git Bash shell, because the pane inherits whatever that shell resolved.
 
+Text Firstmate types into a pane crosses one more Windows boundary on the way.
+The Herdr client is a native Windows program, so Git Bash rewrites any argument it reads as a POSIX path before that program receives it.
+Left alone, a harness slash command such as `/exit` arrives in the pane as `C:/Program Files/Git/exit`, the agent never acts on it, and the send still looks like it succeeded.
+Firstmate suppresses that rewriting for the calls whose payload is literal pane input, and leaves it in place for the calls that genuinely pass paths a native client must receive in native form.
+Nothing is required of you here either.
+
 ## Supported limits
 
 These are current, measured Windows limits rather than defects awaiting a fix.
