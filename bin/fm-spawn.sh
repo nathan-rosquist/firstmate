@@ -2857,6 +2857,18 @@ spawn_record_traceparent() {
   return "$status"
 }
 
+# A Windows (Git Bash) pane opens a NON-login shell, so /etc/profile never runs
+# and PATH is whatever the backend daemon inherited plus Git for Windows' `bin`,
+# which holds only bash, sh, and git. /usr/bin is absent there, so `env`, every
+# `#!/usr/bin/env bash` shebang, and the harness binary itself are unresolvable:
+# the launch line below dies at the prompt while the spawn still reports success.
+# Ship firstmate's own PATH in ahead of it, through the same pre-launch channel
+# GOTMPDIR uses, keeping the pane's own entries behind ours so nothing the
+# backend deliberately added is discarded. Same root cause as the
+# CLAUDE_CONFIG_DIR forward above: the daemon does not inherit our environment.
+if fm_platform_is_msys; then
+  spawn_send_text_line "$T" "export PATH=$(shell_quote "$PATH"):\"\$PATH\""
+fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.

@@ -170,6 +170,10 @@ This is not cosmetic.
 Firstmate proves a pane's shell is idle and childless before closing it, and that proof only recognizes a real POSIX shell.
 A PowerShell pane fails the proof permanently, which leaves quarantined workspaces behind on every cleanup.
 
+A Herdr pane opens that shell without login mode, so `/etc/profile` never runs and the pane's `PATH` carries Git for Windows' `bin` directory, which holds only `bash`, `sh`, and `git`.
+Firstmate exports its own `PATH` into each pane before the launch command for that reason; without it `env`, every `#!/usr/bin/env bash` script, and the agent binary itself are unresolvable there.
+Nothing is required of you here beyond starting Firstmate from a normal Git Bash shell, because the pane inherits whatever that shell resolved.
+
 ## Supported limits
 
 These are current, measured Windows limits rather than defects awaiting a fix.
