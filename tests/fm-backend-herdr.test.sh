@@ -346,6 +346,19 @@ test_non_msys_literal_send_leaves_the_environment_alone() {
   pass "a non-MSYS literal send leaves the environment alone"
 }
 
+# The Windows jq build emits CRLF, and only the final line's CR is close enough
+# to the end for command substitution to strip, so a multi-line capture keeps an
+# interior CR that rides into ids, labels, and joined message text. This case
+# feeds the filter a CR-bearing capture directly, so it stays meaningful on a
+# host whose own jq never produces one.
+test_strip_cr_clears_interior_carriage_returns() {
+  local out
+  out=$(printf 'w1\r\nw7\r\n' | bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_strip_cr' "$ROOT")
+  assert_not_contains "$out" "$(printf '\r')" "fm_backend_herdr_strip_cr left a carriage return behind"
+  [ "$out" = "$(printf 'w1\nw7')" ] || fail "fm_backend_herdr_strip_cr should yield exactly the LF-separated lines"
+  pass "fm_backend_herdr_strip_cr: strips every CR from a multi-line capture, interior ones included"
+}
+
 # --- launcher_identity: the exact workspace a worker must be placed in -------
 #
 # Herdr injects HERDR_ENV/HERDR_PANE_ID/HERDR_SESSION/HERDR_SOCKET_PATH into
@@ -521,6 +534,7 @@ test_workspace_ensure_refuses_an_ambiguous_label_with_no_launcher() {
   expect_code 3 "$status" "two same-labeled home workspaces with no launcher identity must refuse"
   assert_contains "$out" "labeled 'firstmate'" "the ambiguity refusal did not name the duplicated label"
   assert_contains "$out" "w1 w7" "the ambiguity refusal did not name the candidate workspaces"
+  assert_not_contains "$out" "$(printf '\r')" "a carriage return from the platform jq build must never survive into a refusal message"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "an ambiguous placement must not mint a third same-labeled workspace"
   pass "fm_backend_herdr_workspace_ensure: refuses to guess between two same-labeled home workspaces"
 }
@@ -4632,6 +4646,7 @@ test_cli_helper_sets_env_and_appends_trailing_session_flag
 test_msys_literal_send_suppresses_argument_path_conversion
 test_msys_ordinary_call_keeps_argument_path_conversion
 test_non_msys_literal_send_leaves_the_environment_alone
+test_strip_cr_clears_interior_carriage_returns
 test_launcher_identity_absent_without_a_herdr_pane
 test_launcher_identity_absent_when_herdr_env_alone_is_set
 test_launcher_identity_resolves_the_exact_pane_tab_and_workspace
