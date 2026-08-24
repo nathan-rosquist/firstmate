@@ -2642,15 +2642,31 @@ fm_backend_herdr_target_ready() {  # <target>
 # path forever. `.result.pane.foreground_cwd` tracks the ACTUALLY RUNNING
 # foreground process's cwd instead - confirmed live on macOS and Linux.
 #
-# On Windows both fields are unusable: `foreground_cwd` is always null and a Git
-# Bash pane's own cwd freezes at creation, because the tracking that worked under
-# PowerShell came from Herdr's injected prompt wrapper rather than from the pane
-# itself. This function therefore returns empty there forever, which is exactly
-# why fm-spawn.sh acquires the worktree with `treehouse get --lease` in its own
-# shell and treats an empty read as "this platform cannot answer"
-# (docs/verification/runtime-backends.md "Windows x86_64").
+# Windows measures the other way round, so MSYS falls back to `.cwd`: the Herdr
+# build there emits NO `foreground_cwd` key at all, while `.cwd` is live rather
+# than frozen and follows a `cd` within a single poll
+# (docs/verification/runtime-backends.md "Windows x86_64"). That value arrives
+# in native form with a trailing separator, so it is folded to the POSIX form
+# every caller compares against. The fallback stays MSYS-only because `.cwd`
+# really is frozen on a POSIX host, where reading it would report a stale
+# creation-time path as though it were live.
+#
+# The MSYS read tracks the pane's TOP-LEVEL shell, not a background subshell.
+# That is enough here: fm-spawn.sh acquires the worktree with
+# `treehouse get --lease` in its own shell, so this read only confirms the
+# pane's arrival and never has to see inside a subshell.
 fm_backend_herdr_current_path() {  # <target>
   fm_backend_herdr_target_ready "$1" || return 0
+  local path
+  if fm_platform_is_msys; then
+    path=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+      | jq -r '.result.pane.foreground_cwd // .result.pane.cwd // empty' 2>/dev/null)
+    [ -n "$path" ] || return 0
+    path=$(fm_path_posix "$path")
+    [ "$path" = / ] || path=${path%/}
+    printf '%s\n' "$path"
+    return 0
+  fi
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
     | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
 }
