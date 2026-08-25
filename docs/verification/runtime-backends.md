@@ -645,27 +645,42 @@ Every live suite runs through the same guarded lab helper as the other platforms
 
 Observed results: the backend smoke lane reported 13 ok with no presentation-lock warnings, the control smoke lane reported 5 ok clean, the idle-shell proof passed, and a proved pane close removed the shell from the process table.
 
-Four Windows mechanisms differ from the POSIX lane and are each carried by an explicit adapter path rather than by accident:
+Five Windows mechanisms differ from the POSIX lane and are each carried by an explicit adapter path rather than by accident:
 
 - Herdr reports a native socket path such as `C:\Users\...\sessions\<name>\herdr.sock`, so the canonical socket resolver folds every spelling through `fm_path_posix` before its absolute test; without that fold, lock-path resolution failed before the namespace was created.
 - The presentation lock namespace cannot be created at mode 700 on a `noacl` NTFS mount, so the mode gate alone is probe-and-accept while the directory, symlink, and owner checks remain unconditional on every platform.
 - Herdr names a Git Bash pane shell `bash.exe`, so one shared normalizer strips a BSD login dash everywhere and strips backslash paths and the `.exe` suffix only under MSYS before the bare-shell comparison.
 - MSYS `ps` supports no `-o` selectors at all, so the process reads are served from `bin/fm-winproc-lib.sh` in native Windows pid space, and signalling uses `/usr/bin/kill -W` by absolute path because the Bash builtin has no `-W`.
+- The pane object carries no `foreground_cwd` key on this build while its `.cwd` is live rather than frozen, so `current_path` falls back to `.cwd` under MSYS only and folds the native value through `fm_path_posix`.
 
 `/usr/bin/kill -W` cannot address a purely native process outside the MSYS runtime.
 That is a safety property rather than a gap: the signalling path can never reach a process the adapter did not itself resolve as an MSYS-runtime pane shell.
 
-Two capabilities have no Windows route and degrade to their documented fallbacks.
+One capability has no Windows route and degrades to its documented fallback.
 `python3` on win32 has no `AF_UNIX`, so the optional event reader and workspace-move helpers exit at their designed clean status instead of raising, and ordering falls back to polling and flat placement.
-`foreground_cwd` is always null and a Git Bash pane's reported cwd does not follow a `cd`, because the tracking that worked under PowerShell came from Herdr's injected prompt wrapper rather than from the pane itself, so `current_path` has no working route on this platform.
 
-That second gap used to block every crewmate and scout spawn on this platform, and is resolved by no longer acquiring the worktree through the terminal.
-`fm_backend_herdr_current_path` reads `.result.pane.foreground_cwd` and therefore returned empty on every poll, so the former worktree-discovery loop never observed the pane leaving the project and refused after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refused for the same reason.
+The `current_path` field choice was remeasured on 2026-08-24 against Herdr 0.8.2, on a real pane in a guarded lab session:
+
+```sh
+herdr pane get "$PANE" --session "$SESSION" | jq -r '.result.pane | keys[]'
+herdr pane get "$PANE" --session "$SESSION" | jq -r '.result.pane | has("foreground_cwd")'
+```
+
+The key list is `agent_status cwd focused pane_id revision scroll tab_id terminal_id terminal_title terminal_title_stripped workspace_id`, and `has("foreground_cwd")` answers `false`: on this build the key is absent rather than null.
+`.cwd` is live on this platform rather than frozen at creation, and polling every 0.25s after each of `cd /c/Windows`, `cd /c/Users/nrosq`, and `cd /tmp` reported `C:\Windows\`, `C:\Users\nrosq\`, and `C:\Users\nrosq\AppData\Local\Temp\` on the first poll every time.
+`fm_backend_herdr_current_path` therefore falls back to `.cwd` under MSYS and folds the native value through `fm_path_posix`, which maps that last reading back to `/tmp` through the Git Bash mount table, then strips the trailing separator.
+The fallback is gated on MSYS because `.cwd` is genuinely frozen on macOS and Linux, where reading it would report a stale creation-time path as though it were live.
+The MSYS reading tracks the pane's top-level shell and not a background subshell: during a backgrounded `bash -c 'cd /c/Users; sleep 3'` the reported cwd stayed at the parent's.
+That bound is sufficient because this read only confirms the pane's arrival, and no longer discovers a worktree.
+
+An earlier revision of this record read `foreground_cwd` as null and `.cwd` as frozen, and the resulting empty read used to block every crewmate and scout spawn on this platform.
+That block is independently resolved by no longer acquiring the worktree through the terminal, and the correction above does not reinstate the old dependency.
+The former worktree-discovery loop never observed the pane leaving the project and refused after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refused for the same reason.
 Both refusals were the guard behaving correctly rather than a guard going missing: an unreadable cwd can never be mistaken for a confirmed worktree, so no spawn was recorded against an unverified directory.
 `fm-spawn.sh` now runs `treehouse get --lease --lease-holder <task-id>` in its own shell, which is non-interactive, opens no subshell, and prints only the worktree's absolute path to stdout, and then sends the pane a plain `cd` into that already-known path.
 The isolation guarantee is unchanged because `validate_spawn_worktree` reads the filesystem rather than the terminal, and the durable lease is returned on every failure path until the published task record owns the worktree.
-The pane-arrival read is now a bounded best-effort confirmation: a non-empty path must resolve to the leased worktree or the spawn refuses, while an empty read means this platform cannot answer and the ship brief's own isolation assertion is the agent-side backstop.
-The measured facts above are unchanged, so `current_path` still has no working route on Windows; it is simply no longer on the path that acquires a worktree.
+The pane-arrival read is a bounded best-effort confirmation: a non-empty path must resolve to the leased worktree or the spawn refuses, while an empty read means that platform cannot answer and the ship brief's own isolation assertion is the agent-side backstop.
+Windows now returns a non-empty path, so it takes the resolving branch rather than the backstop, and both sides of that comparison are normalized by `real_path_or_raw` before they are compared.
 
 ## Zellij
 

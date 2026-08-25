@@ -3201,6 +3201,62 @@ test_current_path_reads_cwd() {
   pass "fm_backend_herdr_current_path: reads pane foreground_cwd (the live running process), not the frozen creation-time cwd"
 }
 
+# Windows measures the opposite way round (docs/verification/runtime-backends.md
+# "Windows x86_64"): its Herdr build emits no foreground_cwd key at all, while
+# .cwd is live rather than frozen. This drives the platform seam and a cygpath
+# fixture instead of skipping, so the fallback and its MSYS gate are both
+# enforced on every host rather than only on Git Bash.
+test_current_path_msys_falls_back_to_live_cwd() {
+  local dir log resp fb fake out
+  dir="$TMP_ROOT/cwd-msys"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  fake="$dir/fakepath"; mkdir -p "$fake"
+  cat > "$fake/cygpath" <<'SH'
+#!/bin/sh
+p=$(printf '%s' "$3" | tr '\\' '/')
+case "$p" in
+  [A-Za-z]:/*)
+    printf '/%s%s\n' \
+      "$(printf '%s' "$p" | cut -c1 | tr 'A-Z' 'a-z')" \
+      "$(printf '%s' "$p" | cut -c3-)"
+    ;;
+  *) printf '%s\n' "$p" ;;
+esac
+SH
+  chmod +x "$fake/cygpath"
+
+  probe() {  # <pane-json> <uname> -> the path current_path reports
+    printf '%s\n' "$1" > "$resp/1.out"
+    rm -f "$resp/.count"
+    PATH="$fake:$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      FM_PLATFORM_UNAME="$2" FM_PLATFORM_MSYS='' \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_current_path default:w1:p2' "$ROOT"
+  }
+
+  # The real Windows payload: no foreground_cwd key at all, and a native cwd
+  # carrying a trailing separator.
+  out=$(probe '{"result":{"pane":{"cwd":"C:\\Users\\nrosq\\wt\\"}}}' MINGW64_NT-fixture)
+  [ "$out" = "/c/Users/nrosq/wt" ] \
+    || fail "under MSYS current_path must fall back to the live .cwd, folded to POSIX with no trailing separator, got '$out'"
+
+  # A pane sitting at the filesystem root must still report a path, not empty.
+  out=$(probe '{"result":{"pane":{"cwd":"/"}}}' MINGW64_NT-fixture)
+  [ "$out" = "/" ] || fail "a pane at the filesystem root must report '/', got '$out'"
+
+  # foreground_cwd still wins wherever a build does emit it.
+  out=$(probe '{"result":{"pane":{"cwd":"C:\\Users\\nrosq\\stale\\","foreground_cwd":"C:\\Users\\nrosq\\live\\"}}}' MINGW64_NT-fixture)
+  [ "$out" = "/c/Users/nrosq/live" ] \
+    || fail "foreground_cwd must still win over .cwd under MSYS, got '$out'"
+
+  # Off MSYS nothing changes: .cwd is genuinely frozen there, so an absent
+  # foreground_cwd must read empty rather than report a stale creation-time path.
+  out=$(probe '{"result":{"pane":{"cwd":"/tmp/pane-creation-dir"}}}' Linux)
+  [ -z "$out" ] \
+    || fail "off MSYS an absent foreground_cwd must read empty, never the frozen creation-time cwd, got '$out'"
+
+  pass "fm_backend_herdr_current_path: falls back to the live .cwd under MSYS only, folded to POSIX, and never reports a POSIX host's frozen cwd"
+}
+
 # --- busy_state (semantic agent state) ---------------------------------------
 
 test_busy_state_working_maps_to_busy() {
@@ -4801,6 +4857,7 @@ test_capture_preserves_pane_read_failure
 test_send_key_normalizes_and_targets_pane
 test_kill_is_best_effort
 test_current_path_reads_cwd
+test_current_path_msys_falls_back_to_live_cwd
 test_busy_state_working_maps_to_busy
 test_busy_state_done_and_blocked_map_to_idle
 test_busy_state_unknown_on_no_agent
