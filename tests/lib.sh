@@ -124,6 +124,15 @@ fm_test_reap_orphans() {
   now=$(date +%s)
   for marker in "${TMPDIR:-/tmp}"/fm-*/.fm-test-fixture; do
     [ -e "$marker" ] || continue
+    # Both gates below are side-effect-free reads ANDed together, so their order
+    # cannot change which markers are reaped - but it dominates what sourcing
+    # this file costs. The age gate is one stat; the ownership gate spawns a
+    # bash per marker to source a 1500-line library, which under MSYS's emulated
+    # fork costs seconds rather than milliseconds. Ordering age first means a
+    # marker too young to reap - which is every marker belonging to a concurrent
+    # or recent run - is discarded before anything expensive runs.
+    mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null) || continue
+    [ $((now - mtime)) -ge "$FM_TEST_ORPHAN_MAX_AGE_SECONDS" ] || continue
     owner_pid=$(sed -n '1p' "$marker" 2>/dev/null) || owner_pid=
     owner_identity=$(sed -n '2,$p' "$marker" 2>/dev/null) || owner_identity=
     case "$owner_pid" in
@@ -135,8 +144,6 @@ fm_test_reap_orphans() {
         fi
         ;;
     esac
-    mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null) || continue
-    [ $((now - mtime)) -ge "$FM_TEST_ORPHAN_MAX_AGE_SECONDS" ] || continue
     dir=$(dirname "$marker")
     rm -rf "$dir"
   done
