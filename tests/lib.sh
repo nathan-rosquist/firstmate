@@ -138,9 +138,17 @@ fm_test_reap_orphans() {
     case "$owner_pid" in
       '' | *[!0-9]*) ;;
       *)
-        current_identity=$(fm_test_pid_identity "$owner_pid" 2>/dev/null) || current_identity=
-        if [ -n "$owner_identity" ] && [ "$current_identity" = "$owner_identity" ]; then
-          continue
+        # A pid the kernel no longer knows cannot match the recorded identity:
+        # fm_pid_identity finds no process to describe, yields nothing, and both
+        # branches below then fall through to the reap. Asking kill -0 first
+        # reaches that same verdict for the price of a builtin, and it skips the
+        # per-marker library source in precisely the case this function exists to
+        # clean up, where the run that left the marker is already gone.
+        if kill -0 "$owner_pid" 2>/dev/null; then
+          current_identity=$(fm_test_pid_identity "$owner_pid" 2>/dev/null) || current_identity=
+          if [ -n "$owner_identity" ] && [ "$current_identity" = "$owner_identity" ]; then
+            continue
+          fi
         fi
         ;;
     esac
