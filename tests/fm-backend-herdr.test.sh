@@ -1552,8 +1552,57 @@ death_process_info_fixture() {  # <pane> <pid>
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$1" "$2" "$2" "$2"
 }
 
+# start_death_shell: start one real childless idle shell for the pane-death
+# fixtures below and publish the two pids that name it.
+#   DEATH_LOOKUP_PID  the pid the ADAPTER resolves: the WINPID under MSYS.
+#   DEATH_JOB_PID     the pid this TEST addresses with kill, kill -0, and wait.
+#   DEATH_FIFO        the fifo, so stop_death_shell can remove it.
+# Two pids because MSYS keeps the fixture and the adapter in different pid
+# spaces: herdr reports a native Windows pid, so the idle-shell proof and every
+# signal go through Windows process facts, while this test shell can only
+# address its own MSYS job. An MSYS pid names nothing in Windows pid space, so
+# handing one to the adapter makes the proof fail every retry and every
+# pane-death assertion silently measure the plain close instead - which is why
+# an unresolvable WINPID fails here rather than falling back.
+# The shell blocks on a fifo read rather than on `sleep` because the proof
+# demands a recognized shell with no child at all: `sleep` is no shell, and a
+# shell running `sleep` has a child. A blocked `read` forks nothing.
+start_death_shell() {  # [hup-immune]
+  local attempt=0
+  DEATH_FIFO="$TMP_ROOT/death-fifo.$$.$RANDOM"
+  mkfifo "$DEATH_FIFO" || fail "could not create the death shell's fifo $DEATH_FIFO"
+  if [ "${1:-}" = hup-immune ]; then
+    bash -c 'trap "" HUP; read -r _ < "$1"' _ "$DEATH_FIFO" & DEATH_JOB_PID=$!
+  else
+    bash -c 'read -r _ < "$1"' _ "$DEATH_FIFO" & DEATH_JOB_PID=$!
+  fi
+  DEATH_LOOKUP_PID=$DEATH_JOB_PID
+  case "$(uname -s)" in
+    MINGW*|MSYS*) ;;
+    *) return 0 ;;
+  esac
+  # MSYS ps column 4 is the WINPID of that same process, which is exactly the
+  # pid space the adapter looks the pane shell up in.
+  while [ "$attempt" -lt 50 ]; do
+    DEATH_LOOKUP_PID=$(ps -p "$DEATH_JOB_PID" 2>/dev/null | awk 'NR>1{print $4; exit}')
+    case "$DEATH_LOOKUP_PID" in
+      ''|*[!0-9]*) ;;
+      *) return 0 ;;
+    esac
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  fail "could not resolve the death shell's Windows pid, so the adapter would look up nothing"
+}
+
+stop_death_shell() {
+  kill "$DEATH_JOB_PID" 2>/dev/null || true
+  wait "$DEATH_JOB_PID" 2>/dev/null || true
+  rm -f "$DEATH_FIFO"
+}
+
 test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-after"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   # w1 focused; target w2 sits after it (r > a), so no repositioning is needed.
@@ -1563,12 +1612,12 @@ test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1576,7 +1625,7 @@ test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "emptying close behind focus should succeed through the pane-death path: $out"
   [ ! -s "$dir/mover.log" ] || fail "a close already behind focus invoked the workspace mover"
   assert_contains "$(cat "$log")" $'pane\x1fprocess-info' "pane-death close skipped the idle-shell proof"
@@ -1586,7 +1635,7 @@ test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
 }
 
 test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
-  local dir log resp fb out status bgpid mover_line
+  local dir log resp fb out status mover_line
   dir="$TMP_ROOT/close-death-before"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   # Target w1 sits BEFORE the focused w2, which is not last: reposition first.
@@ -1600,13 +1649,13 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w1:p1 "$bgpid" > "$resp/10.out"
+  start_death_shell
+  death_process_info_fixture w1:p1 "$DEATH_LOOKUP_PID" > "$resp/10.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/12.out"
   cp "$resp/12.out" "$resp/13.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/14.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   printf '%s\n' '{"id":"fm-workspace-move","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w2","focused":true},{"workspace_id":"w3","focused":false},{"workspace_id":"w1","focused":false}]}}' > "$dir/mover-response"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
@@ -1615,7 +1664,7 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w1:p1' "$ROOT" 2>&1)
   status=$?
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "repositioned emptying close should succeed through the pane-death path: $out"
   [ "$(cat "$dir/mover.log")" = "$(cd /tmp && pwd -P)/fmtest.sock"$'\t'"w1"$'\t'"3" ] \
     || fail "the repositioning move did not target the exact doomed workspace at the list length: $(cat "$dir/mover.log")"
@@ -1627,7 +1676,7 @@ test_projection_close_emptying_before_focus_repositions_then_uses_pane_death() {
 }
 
 test_projection_close_emptying_before_last_focus_needs_no_move() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-focus-last"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   # Focused w3 is LAST, so the pane-death clamp preserves it without a move.
@@ -1637,12 +1686,12 @@ test_projection_close_emptying_before_last_focus_needs_no_move() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w1:p1 "$bgpid" > "$resp/7.out"
+  start_death_shell
+  death_process_info_fixture w1:p1 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' > "$resp/10.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1650,7 +1699,7 @@ test_projection_close_emptying_before_last_focus_needs_no_move() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w1:p1' "$ROOT" 2>&1)
   status=$?
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "emptying close with last focus should succeed through the pane-death path: $out"
   [ ! -s "$dir/mover.log" ] || fail "a last-focused close invoked the workspace mover"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' "last-focused emptying close used the focus-unsafe explicit close"
@@ -1659,7 +1708,7 @@ test_projection_close_emptying_before_last_focus_needs_no_move() {
 }
 
 test_projection_close_emptying_last_workspace_needs_no_move() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-target-last"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   # Target w3 is already last (r > a), so no repositioning is needed.
@@ -1669,12 +1718,12 @@ test_projection_close_emptying_last_workspace_needs_no_move() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","workspace_id":"w3"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w3:p1","tab_id":"w3:t1"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w3:p1 "$bgpid" > "$resp/7.out"
+  start_death_shell
+  death_process_info_fixture w3:p1 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1682,7 +1731,7 @@ test_projection_close_emptying_last_workspace_needs_no_move() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w3:p1' "$ROOT" 2>&1)
   status=$?
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "last-workspace emptying close should succeed through the pane-death path: $out"
   [ ! -s "$dir/mover.log" ] || fail "an already-last close invoked the workspace mover"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' "last-workspace emptying close used the focus-unsafe explicit close"
@@ -1690,7 +1739,7 @@ test_projection_close_emptying_last_workspace_needs_no_move() {
 }
 
 test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-non-emptying"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1700,8 +1749,8 @@ test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":false}]}}' > "$resp/7.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/8.out"
-  sleep 300 & bgpid=$!
-  make_death_lab "$dir" "$bgpid"
+  start_death_shell
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1713,8 +1762,8 @@ test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "non-emptying close did not use the plain close"
   assert_not_contains "$(cat "$log")" $'pane\x1fprocess-info' "non-emptying close ran the idle-shell proof"
   [ ! -s "$dir/mover.log" ] || fail "non-emptying close invoked the workspace mover"
-  kill -0 "$bgpid" 2>/dev/null || fail "non-emptying close signaled the pane's shell"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  kill -0 "$DEATH_JOB_PID" 2>/dev/null || fail "non-emptying close signaled the pane's shell"
+  stop_death_shell
   pass "herdr presentation cleanup: a non-emptying close stays plain with no proof, move, or signal"
 }
 
@@ -1743,7 +1792,7 @@ test_projection_close_plain_without_move_requires_structured_removal() {
 }
 
 test_projection_close_ambiguous_positions_fall_back_to_plain_close() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-ambiguous-positions"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/1.out"
@@ -1756,8 +1805,8 @@ test_projection_close_ambiguous_positions_fall_back_to_plain_close() {
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  sleep 300 & bgpid=$!
-  make_death_lab "$dir" "$bgpid"
+  start_death_shell
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1769,13 +1818,13 @@ test_projection_close_ambiguous_positions_fall_back_to_plain_close() {
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "ambiguous positions did not use the plain close"
   assert_not_contains "$(cat "$log")" $'pane\x1fprocess-info' "ambiguous positions ran the idle-shell proof"
   [ ! -s "$dir/mover.log" ] || fail "ambiguous positions invoked the workspace mover"
-  kill -0 "$bgpid" 2>/dev/null || fail "ambiguous positions signaled the pane's shell"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  kill -0 "$DEATH_JOB_PID" 2>/dev/null || fail "ambiguous positions signaled the pane's shell"
+  stop_death_shell
   pass "herdr presentation cleanup: an ambiguous workspace layout falls back to the plain close"
 }
 
 test_projection_close_move_failure_falls_back_to_plain_close() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-move-failure"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/1.out"
@@ -1792,8 +1841,8 @@ test_projection_close_move_failure_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/12.out"
   cp "$resp/12.out" "$resp/13.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/14.out"
-  sleep 300 & bgpid=$!
-  make_death_lab "$dir" "$bgpid"
+  start_death_shell
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1806,13 +1855,13 @@ test_projection_close_move_failure_falls_back_to_plain_close() {
     "a failed repositioning move did not warn about losing the focus-safe path"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw1:p1' "move failure did not use the plain close"
   assert_not_contains "$(cat "$log")" $'pane\x1fprocess-info' "move failure ran the idle-shell proof"
-  kill -0 "$bgpid" 2>/dev/null || fail "move failure signaled the pane's shell"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  kill -0 "$DEATH_JOB_PID" 2>/dev/null || fail "move failure signaled the pane's shell"
+  stop_death_shell
   pass "herdr presentation cleanup: a failed repositioning move falls back to the plain close with a warning"
 }
 
 test_projection_close_busy_pane_falls_back_to_plain_close() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-busy-pane"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1821,13 +1870,13 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
+  start_death_shell
   # The pane still has a foreground agent, so the idle-shell proof refuses.
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$DEATH_LOOKUP_PID" "$DEATH_LOOKUP_PID" "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1837,13 +1886,13 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   status=$?
   [ "$status" -eq 0 ] || fail "a busy pane should fall back to the plain close: $out"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a busy pane did not use the plain close"
-  kill -0 "$bgpid" 2>/dev/null || fail "a busy pane close signaled the pane's shell"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  kill -0 "$DEATH_JOB_PID" 2>/dev/null || fail "a busy pane close signaled the pane's shell"
+  stop_death_shell
   pass "herdr presentation cleanup: a pane with a live foreground process falls back to the plain close"
 }
 
 test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-transient-helper"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1852,16 +1901,16 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
+  start_death_shell
   # Sample 1: the shell is transiently redrawing its prompt (real 0.7.5 shape:
   # a helper such as starship rides along as a second foreground process).
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":99998,"name":"starship","argv":["/usr/local/bin/starship","prompt","--continuation"]},{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$DEATH_LOOKUP_PID" "$DEATH_LOOKUP_PID" "$DEATH_LOOKUP_PID" > "$resp/7.out"
   # Sample 2: the helper finished; the shell is provably alone and idle.
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/8.out"
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/8.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1869,7 +1918,7 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=3 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "a transient prompt helper should settle into the pane-death path: $out"
   [ "$(grep -c $'pane\x1fprocess-info' "$log")" -ge 2 ] \
     || fail "the settle window did not retry the idle-shell proof"
@@ -1879,7 +1928,7 @@ test_projection_close_transient_prompt_helper_settles_then_uses_pane_death() {
 }
 
 test_projection_close_death_escalates_sigkill_after_sighup_survival() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-escalate"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1888,15 +1937,15 @@ test_projection_close_death_escalates_sigkill_after_sighup_survival() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell hup-immune
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"internal_error","message":"transient failure"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/9.out"
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/10.out"
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/10.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1906,16 +1955,16 @@ test_projection_close_death_escalates_sigkill_after_sighup_survival() {
   status=$?
   [ "$status" -eq 0 ] || fail "a SIGHUP-surviving shell should be finished by the SIGKILL escalation: $out"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' "the SIGKILL escalation used the focus-unsafe explicit close"
-  if kill -0 "$bgpid" 2>/dev/null; then
-    kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  if kill -0 "$DEATH_JOB_PID" 2>/dev/null; then
+    stop_death_shell
     fail "the SIGKILL escalation left the trapped shell alive"
   fi
-  wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   pass "herdr presentation cleanup: a SIGHUP-surviving shell is escalated to SIGKILL before giving up"
 }
 
 test_projection_close_death_failure_falls_back_to_plain_close() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-fallback"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1924,17 +1973,17 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell hup-immune
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/9.out"
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/10.out"
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/10.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/11.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2"}}}' > "$resp/12.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/14.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/15.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/16.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1944,12 +1993,12 @@ test_projection_close_death_failure_falls_back_to_plain_close() {
   status=$?
   [ "$status" -eq 0 ] || fail "an unkillable shell should fall back to the plain close: $out"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a failed pane-death close did not use the plain close fallback"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   pass "herdr presentation cleanup: a failed pane-death close falls back to the plain close"
 }
 
 test_projection_close_death_still_restores_a_stolen_focus() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-restore"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/1.out"
@@ -1958,8 +2007,8 @@ test_projection_close_death_still_restores_a_stolen_focus() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   # The backstop still fires when the post-close snapshot disagrees.
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":true}]}}' > "$resp/9.out"
@@ -1967,7 +2016,7 @@ test_projection_close_death_still_restores_a_stolen_focus() {
   printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1","workspace_id":"w1"}}}' > "$resp/11.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/13.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/14.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1975,13 +2024,14 @@ test_projection_close_death_still_restores_a_stolen_focus() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "the pane-death close with a restored backstop should succeed: $out"
   assert_contains "$(cat "$log")" $'tab\x1ffocus\x1fw1:t1' "the backstop did not restore the exact prior tab"
   pass "herdr presentation cleanup: the exact-tab restore remains the backstop behind the pane-death close"
 }
 
 test_projection_close_death_never_sigkills_a_reused_pid() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/close-death-pid-reuse"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1993,8 +2043,8 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   # The original shell survives SIGHUP; by SIGKILL time the pane's process
   # information shows a DIFFERENT shell pid, modeling the original pid having
   # been reused by an unrelated process the pane no longer owns.
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell hup-immune
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   cp "$resp/3.out" "$resp/8.out"   # SIGHUP poll 1: pane still present
   cp "$resp/3.out" "$resp/9.out"   # SIGHUP poll 2: pane still present
   death_process_info_fixture w2:p2 99997 > "$resp/10.out"
@@ -2002,7 +2052,7 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/12.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/14.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -2010,18 +2060,18 @@ test_projection_close_death_never_sigkills_a_reused_pid() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  if ! kill -0 "$bgpid" 2>/dev/null; then
-    wait "$bgpid" 2>/dev/null || true
+  if ! kill -0 "$DEATH_JOB_PID" 2>/dev/null; then
+    stop_death_shell
     fail "the SIGKILL escalation signaled a pid the exact pane no longer owns"
   fi
-  kill -KILL "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "the refused escalation should fall back to the plain close: $out"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "the refused escalation did not fall back to the plain close"
   pass "herdr presentation cleanup: SIGKILL never reaches a pid the exact pane no longer owns"
 }
 
 assert_projection_close_failed_removal_rolls_back_the_reposition() {
-  local mode=$1 dir log resp fb out status bgpid
+  local mode=$1 dir log resp fb out status
   dir="$TMP_ROOT/close-move-rollback-$mode"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   # Doomed w1 sits BEFORE the focused w2 (not last): the plan repositions it
@@ -2037,8 +2087,8 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
   # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
   printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/8.out"
   printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/9.out"
-  bash -c 'trap "" HUP; sleep 300' & bgpid=$!
-  death_process_info_fixture w1:p1 "$bgpid" > "$resp/10.out"
+  start_death_shell hup-immune
+  death_process_info_fixture w1:p1 "$DEATH_LOOKUP_PID" > "$resp/10.out"
   if [ "$mode" = pane-gone-workspace-present ]; then
     printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/11.out"
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false},{"workspace_id":"w1","active_tab_id":"w1:t2","focused":false}]}}' > "$resp/12.out"
@@ -2047,7 +2097,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
   else
     cp "$resp/3.out" "$resp/11.out"  # SIGHUP poll 1: pane still present
     cp "$resp/3.out" "$resp/12.out"  # SIGHUP poll 2: pane still present
-    death_process_info_fixture w1:p1 "$bgpid" > "$resp/13.out"  # escalation resample: same owner
+    death_process_info_fixture w1:p1 "$DEATH_LOOKUP_PID" > "$resp/13.out"  # escalation resample: same owner
     cp "$resp/3.out" "$resp/14.out"  # SIGKILL poll 1: pane still present
     cp "$resp/3.out" "$resp/15.out"  # SIGKILL poll 2: pane still present
   fi
@@ -2061,7 +2111,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t1","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","focused":false}]}}' > "$resp/18.out"
     printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t1","focused":true}]}}' > "$resp/19.out"
   fi
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   printf '%s\n' '{"id":"fm-workspace-move","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w2","focused":true},{"workspace_id":"w3","focused":false},{"workspace_id":"w1","focused":false}]}}' > "$dir/mover-response"
   printf '%s\n' '{"id":"fm-workspace-move","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w1","focused":false},{"workspace_id":"w2","focused":true},{"workspace_id":"w3","focused":false}]}}' > "$dir/mover-response-2"
   fb=$(make_herdr_fakebin "$dir")
@@ -2072,7 +2122,7 @@ assert_projection_close_failed_removal_rolls_back_the_reposition() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w1:p1' "$ROOT" 2>&1)
   status=$?
-  kill -KILL "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  stop_death_shell
   [ "$status" -ne 0 ] || fail "an unconfirmed removal must report failure: $out"
   [ "$(wc -l < "$dir/mover.log" | tr -d ' ')" = 2 ] \
     || fail "a failed removal did not roll the reposition back exactly once: $(cat "$dir/mover.log")"
@@ -2091,7 +2141,7 @@ test_projection_close_failed_removal_rolls_back_the_reposition() {
 }
 
 test_kill_emptying_non_focused_uses_pane_death() {
-  local dir log resp fb out status bgpid lock_log lock_held
+  local dir log resp fb out status lock_log lock_held
   dir="$TMP_ROOT/kill-death"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; lock_log="$dir/lock.log"; lock_held="$dir/lock-held"
   : > "$log"; : > "$lock_log"
@@ -2101,12 +2151,12 @@ test_kill_emptying_non_focused_uses_pane_death() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
-  sleep 300 & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  start_death_shell
+  death_process_info_fixture w2:p2 "$DEATH_LOOKUP_PID" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  make_death_lab "$dir" "$bgpid"
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -2134,6 +2184,7 @@ test_kill_emptying_non_focused_uses_pane_death() {
       fm_backend_herdr_kill fmtest:w2:p2
     ' "$ROOT" 2>&1)
   status=$?
+  stop_death_shell
   [ "$status" -eq 0 ] || fail "an emptying non-focused kill should stay best-effort: $out"
   [ "$(cat "$lock_log")" = "$(printf 'acquire\nrelease')" ] \
     || fail "the generic kill did not hold one presentation lock across its complete mutation: $(cat "$lock_log")"
@@ -2144,15 +2195,15 @@ test_kill_emptying_non_focused_uses_pane_death() {
 }
 
 test_kill_focused_workspace_stays_plain_close() {
-  local dir log resp fb out status bgpid
+  local dir log resp fb out status
   dir="$TMP_ROOT/kill-focused"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":true}]}}' > "$resp/1.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/5.out"
-  sleep 300 & bgpid=$!
-  make_death_lab "$dir" "$bgpid"
+  start_death_shell
+  make_death_lab "$dir" "$DEATH_LOOKUP_PID"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -2169,8 +2220,8 @@ test_kill_focused_workspace_stays_plain_close() {
   [ "$status" -eq 0 ] || fail "a focused-workspace kill should stay best-effort: $out"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a focused-workspace kill did not use the plain close"
   assert_not_contains "$(cat "$log")" $'pane\x1fprocess-info' "a focused-workspace kill ran the idle-shell proof"
-  kill -0 "$bgpid" 2>/dev/null || fail "a focused-workspace kill signaled the pane's shell"
-  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  kill -0 "$DEATH_JOB_PID" 2>/dev/null || fail "a focused-workspace kill signaled the pane's shell"
+  stop_death_shell
   pass "fm_backend_herdr_kill: killing the focused workspace's tab keeps the legitimate plain close"
 }
 
