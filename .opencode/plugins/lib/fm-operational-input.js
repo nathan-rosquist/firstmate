@@ -13,7 +13,13 @@ export function encodeFirstmateOperationalInput(root, kind, content) {
     const script = existsSync(requested)
       ? requested
       : `${adapterRoot}/bin/fm-operational-input.sh`;
-    const child = spawn(script, ["encode", kind], {
+    // bash runs the script rather than the kernel running its shebang, because
+    // Windows has no shebang: CreateProcess cannot execute a .sh at all, so a
+    // direct spawn fails with EFTYPE and the encoder is dead on that platform.
+    // Every script reached this way declares `#!/usr/bin/env bash`, and bash
+    // reports the same $0 and BASH_SOURCE[0] either way, so this is one path
+    // rather than a platform branch.
+    const child = spawn("bash", [script, "encode", kind], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
