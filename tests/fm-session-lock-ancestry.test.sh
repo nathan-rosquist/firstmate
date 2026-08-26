@@ -268,9 +268,18 @@ make_primary_home() {  # <dir>
   # owner, exactly as a real session does at session start.
   cat > "$dir/session.sh" <<'SH'
 #!/usr/bin/env bash
+# MSYS ps rejects -o entirely; the Cygwin procfs ppid file answers for MSYS pids.
+# Without the fallback this prints nothing, nothing never equals 1, and the wait
+# below can never observe the reparenting it exists to wait for.
+fixture_ppid() {  # <pid>
+  local out
+  out=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')
+  [ -n "$out" ] || out=$(tr -d ' \n' < "/proc/$1/ppid" 2>/dev/null)
+  printf '%s' "$out"
+}
 if [ "${FM_FIXTURE_ORPHAN_HERE:-0}" = 1 ]; then
   i=0
-  while [ "$i" -lt 200 ] && [ "$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')" != 1 ]; do
+  while [ "$i" -lt 200 ] && [ "$(fixture_ppid $$)" != 1 ]; do
     sleep 0.05
     i=$((i + 1))
   done
@@ -282,8 +291,15 @@ printf '%s\n' "$?" > "$FM_HOME/state/hook.rc"
 SH
   cat > "$dir/daemon.sh" <<'SH'
 #!/usr/bin/env bash
+# MSYS ps rejects -o entirely; the Cygwin procfs ppid file answers for MSYS pids.
+fixture_ppid() {  # <pid>
+  local out
+  out=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')
+  [ -n "$out" ] || out=$(tr -d ' \n' < "/proc/$1/ppid" 2>/dev/null)
+  printf '%s' "$out"
+}
 i=0
-while [ "$i" -lt 200 ] && [ "$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')" != 1 ]; do
+while [ "$i" -lt 200 ] && [ "$(fixture_ppid $$)" != 1 ]; do
   sleep 0.05
   i=$((i + 1))
 done
