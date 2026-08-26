@@ -29,6 +29,7 @@ fm-operational-input.sh|lib/fm-operational-input.js
 
 # A spawn whose command argument is itself a script: a .sh literal, or the bare
 # `script` binding the cross-language encoder resolves before spawning.
+# shellcheck disable=SC2016 # this is an ERE for grep, not shell text to expand.
 BARE_SCRIPT_SPAWN='(runProcess|spawn|spawnSync)\((`[^`,]*\.sh`|"[^",]*\.sh"|script)[[:space:]]*,'
 
 test_no_plugin_spawns_a_script_directly() {
@@ -39,7 +40,7 @@ test_no_plugin_spawns_a_script_directly() {
 }
 
 test_every_spawned_script_is_reached_through_bash() {
-  local row script plugin file
+  local script plugin file
   while IFS='|' read -r script plugin; do
     [ -n "$script" ] || continue
     file="$PLUGIN_DIR/$plugin"
