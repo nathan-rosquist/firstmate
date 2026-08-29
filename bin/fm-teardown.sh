@@ -963,8 +963,12 @@ validate_pr_poll_cleanup() {
     echo "REFUSED: unsafe PR-check quarantine path $quarantine; preserving task state." >&2
     return 1
   fi
+  # The device mismatch always refuses. A wrong mode refuses only where the
+  # filesystem can store one, or this refusal would strand every teardown on a
+  # mount whose chmod is a no-op.
   if [ "$(fm_pr_file_device "$quarantine")" != "$state_device" ] \
-    || [ "$(fm_pr_file_mode "$quarantine")" != 700 ]; then
+    || { fm_platform_fs_honors_modes "$quarantine" \
+      && [ "$(fm_pr_file_mode "$quarantine")" != 700 ]; }; then
     echo "REFUSED: PR-check quarantine is not on the task state device; preserving task state." >&2
     return 1
   fi

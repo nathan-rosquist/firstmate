@@ -97,7 +97,11 @@ private_migration_boundaries_valid() {
   fi
   if [ -e "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
     [ -d "$QUARANTINE" ] && [ ! -L "$QUARANTINE" ] || return 1
-    [ "$(fm_pr_file_mode "$QUARANTINE")" = 700 ] || return 1
+    # Directory-ness, symlink and device pin hold everywhere; the mode equality
+    # only where a mode can be stored (bin/fm-pr-lib.sh's private-file comment).
+    if fm_platform_fs_honors_modes "$QUARANTINE"; then
+      [ "$(fm_pr_file_mode "$QUARANTINE")" = 700 ] || return 1
+    fi
     [ "$(fm_pr_file_device "$QUARANTINE")" = "$state_device" ] || return 1
     for artifact in "$QUARANTINE"/* "$QUARANTINE"/.[!.]* "$QUARANTINE"/..?*; do
       [ -e "$artifact" ] || [ -L "$artifact" ] || continue
@@ -361,7 +365,11 @@ refresh_v1_x_shim() {
   mv -f -- "$MIGRATION_X_SHIM_TMP" "$shim" || return 1
   MIGRATION_X_SHIM_TMP=
   [ "$(fm_pr_file_device "$shim")" = "$STATE_DEVICE" ] || return 1
-  [ "$(fm_pr_file_mode "$shim")" = 700 ] || return 1
+  # The chmod above cannot fail loudly on a filesystem that stores no modes, so
+  # read back the mode only where the read-back can mean anything.
+  if fm_platform_fs_honors_modes "$shim"; then
+    [ "$(fm_pr_file_mode "$shim")" = 700 ] || return 1
+  fi
   fmx_poll_shim_valid "$shim" "$FM_HOME" "$FM_ROOT"
 }
 if ! refresh_v1_x_shim; then
@@ -472,7 +480,11 @@ publish_scan_marker() {
 
 quarantine_dir_valid() {
   [ -d "$QUARANTINE" ] && [ ! -L "$QUARANTINE" ] || return 1
-  [ "$(fm_pr_file_mode "$QUARANTINE")" = 700 ] || return 1
+  # Same split as private_migration_boundaries_valid: structure always, the
+  # exact mode only where the filesystem can store one.
+  if fm_platform_fs_honors_modes "$QUARANTINE"; then
+    [ "$(fm_pr_file_mode "$QUARANTINE")" = 700 ] || return 1
+  fi
   [ "$(fm_pr_file_device "$QUARANTINE")" = "$STATE_DEVICE" ]
 }
 
@@ -497,7 +509,10 @@ quarantine_tree_repair_and_validate() {
     [ "$(fm_pr_file_device "$artifact")" = "$STATE_DEVICE" ] || return 1
     [ "$(fm_pr_file_link_count "$artifact")" = 1 ] || return 1
     chmod 0600 "$artifact" || return 1
-    [ "$(fm_pr_file_mode "$artifact")" = 600 ] || return 1
+    # Repair read-back: only a filesystem that stores modes can confirm one.
+    if fm_platform_fs_honors_modes "$artifact"; then
+      [ "$(fm_pr_file_mode "$artifact")" = 600 ] || return 1
+    fi
     [ "$(fm_pr_file_device "$artifact")" = "$STATE_DEVICE" ] || return 1
     [ "$(fm_pr_file_link_count "$artifact")" = 1 ] || return 1
   done
@@ -546,7 +561,11 @@ quarantine_artifact() {
   [ "$(fm_pr_file_link_count "$destination")" = 1 ] || return 1
   chmod 0600 "$destination" || return 1
   [ -f "$destination" ] && [ ! -L "$destination" ] || return 1
-  [ "$(fm_pr_file_mode "$destination")" = 600 ] || return 1
+  # Quarantine read-back after chmod: the mode is only evidence where the
+  # filesystem stores it; regularity, device and link count still are.
+  if fm_platform_fs_honors_modes "$destination"; then
+    [ "$(fm_pr_file_mode "$destination")" = 600 ] || return 1
+  fi
   [ "$(fm_pr_file_device "$destination")" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$destination")" = 1 ] || return 1
   [ ! -e "$source" ] && [ ! -L "$source" ]
