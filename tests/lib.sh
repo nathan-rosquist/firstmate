@@ -159,6 +159,52 @@ fm_test_reap_orphans() {
 
 fm_test_reap_orphans
 
+# --- process field reads ----------------------------------------------------
+#
+# MSYS ps rejects field selection outright - `ps -o ppid= -p <pid>` exits 1 with
+# "unknown option -- o" and prints nothing - so every predicate built on it reads
+# empty there and silently concludes whatever empty happens to mean. The Cygwin
+# procfs answers for MSYS pids, so these read it as a fallback. Field selection
+# is still attempted first, so a POSIX host never reaches the fallback and its
+# behavior is unchanged.
+#
+# The optional ps-command argument exists for the call sites that deliberately
+# invoke /bin/ps to bypass a fake ps shim on PATH; it keeps that bypass intact.
+#
+# These are standalone-script-unfriendly by construction: a helper defined in the
+# sourcing shell cannot reach a fixture written to disk and executed as its own
+# process, so such fixtures inline the same shape instead of calling these.
+
+fm_test_ppid() {  # <pid> [ps-command]
+  local out
+  out=$("${2:-ps}" -o ppid= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$out" ] || out=$(tr -d '[:space:]' 2>/dev/null < "/proc/$1/ppid")
+  printf '%s' "$out"
+}
+
+fm_test_pgid() {  # <pid> [ps-command]
+  local out
+  out=$("${2:-ps}" -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$out" ] || out=$(tr -d '[:space:]' 2>/dev/null < "/proc/$1/pgid")
+  printf '%s' "$out"
+}
+
+# Empty means "no such process" and callers depend on that, so a dead pid must
+# stay empty rather than gain a placeholder. Procfs delivers that for free: the
+# whole /proc/<pid> directory is gone once the process is. The comm field is
+# parenthesized and may itself contain spaces, so the state letter is taken as
+# the first field after the last ") " rather than by a positional cut.
+fm_test_pstate() {  # <pid> [ps-command]
+  local out
+  out=$("${2:-ps}" -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$out" ] && [ -r "/proc/$1/stat" ]; then
+    out=$(cat "/proc/$1/stat" 2>/dev/null)
+    out=${out##*') '}
+    out=${out%% *}
+  fi
+  printf '%s' "$out"
+}
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to

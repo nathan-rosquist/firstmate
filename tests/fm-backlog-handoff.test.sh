@@ -275,12 +275,22 @@ EOF
   real_tasks=$(command -v tasks-axi)
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
+# MSYS ps rejects -o entirely, so field selection yields nothing there and the
+# kill below would target an empty pid instead of crashing the handoff. The
+# Cygwin procfs answers for MSYS pids. Inlined rather than shared from the test
+# library because this runs as its own process, not in the sourcing shell.
+fixture_ppid() {  # <pid>
+  local out
+  out=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$out" ] || out=$(tr -d '[:space:]' 2>/dev/null < "/proc/$1/ppid")
+  printf '%s' "$out"
+}
 "$FM_REAL_TASKS_AXI" "$@"
 rc=$?
 case " $* " in
   *" --file "*" --to "*)
     if [ "$rc" -eq 0 ] && [ "${1:-}" = mv ]; then
-      handoff_pid=$(ps -o ppid= -p "$PPID" | tr -d '[:space:]')
+      handoff_pid=$(fixture_ppid "$PPID")
       kill -KILL "$handoff_pid"
       sleep 1
     fi
@@ -349,10 +359,20 @@ EOF
   real_tasks=$(command -v tasks-axi)
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
+# MSYS ps rejects -o entirely, so field selection yields nothing there and the
+# kill below would target an empty pid instead of crashing the handoff. The
+# Cygwin procfs answers for MSYS pids. Inlined rather than shared from the test
+# library because this runs as its own process, not in the sourcing shell.
+fixture_ppid() {  # <pid>
+  local out
+  out=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$out" ] || out=$(tr -d '[:space:]' 2>/dev/null < "/proc/$1/ppid")
+  printf '%s' "$out"
+}
 case " $* " in
   *" --file "*" --to "*)
     if [ "${1:-}" = mv ]; then
-      handoff_pid=$(ps -o ppid= -p "$PPID" | tr -d '[:space:]')
+      handoff_pid=$(fixture_ppid "$PPID")
       kill -KILL "$handoff_pid"
       sleep 1
     fi
