@@ -375,6 +375,12 @@ case " $* " in
       handoff_pid=$(fixture_ppid "$PPID")
       kill -KILL "$handoff_pid"
       sleep 1
+      # The crash must land BEFORE the move, which is this test's whole premise,
+      # so it never falls through to the passthrough exec below. Falling through
+      # performed the move one second late and every assertion after the kill
+      # raced that timer - they won on Linux and lost on Windows, so the
+      # invariant was proven on neither.
+      exit 137
     fi
     ;;
 esac
