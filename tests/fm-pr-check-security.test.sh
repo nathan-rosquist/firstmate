@@ -186,7 +186,7 @@ write_watcher_lock() {
 assert_valid_migration_marker() {
   local marker=$1
   [ -f "$marker" ] && [ ! -L "$marker" ] || fail "migration success did not publish an ordinary marker"
-  [ "$(file_mode "$marker")" = 600 ] || fail "migration marker mode was not 0600"
+  fm_test_assert_private_mode "$marker" 600 "migration marker is mode 0600"
   grep -qxF fm-pr-check-migration-v1 "$marker" || fail "migration marker bytes were not exact"
   [ "$(awk 'END { print NR + 0 }' "$marker")" -eq 1 ] || fail "migration marker had extra records"
 }
@@ -194,7 +194,7 @@ assert_valid_migration_marker() {
 assert_valid_scan_marker() {
   local marker=$1
   [ -f "$marker" ] && [ ! -L "$marker" ] || fail "migration success did not publish an ordinary scan marker"
-  [ "$(file_mode "$marker")" = 600 ] || fail "migration scan marker mode was not 0600"
+  fm_test_assert_private_mode "$marker" 600 "migration scan marker is mode 0600"
   grep -qxF fm-pr-check-migration-scan-v1 "$marker" || fail "migration scan marker bytes were not exact"
   [ "$(awk 'END { print NR + 0 }' "$marker")" -eq 1 ] || fail "migration scan marker had extra records"
 }
@@ -541,10 +541,10 @@ test_valid_recording_and_merge_derivation() {
     || fail "canonical pr metadata was not exact"
   grep -qxF "pr_head=$expected" "$dir/home/state/task-a.meta" || fail "PR head metadata was not exact"
   cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "published check was not byte-for-byte static"
-  [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "published check mode was not 0600"
-  [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "published sidecar mode was not 0600"
-  [ "$(file_mode "$dir/home/state/task-a.pr-poll-registration")" = 600 ] \
-    || fail "published registration mode was not 0600"
+  fm_test_assert_private_mode "$dir/home/state/task-a.check.sh" 600 "published check is mode 0600"
+  fm_test_assert_private_mode "$dir/home/state/task-a.pr-poll" 600 "published sidecar is mode 0600"
+  fm_test_assert_private_mode "$dir/home/state/task-a.pr-poll-registration" 600 \
+    "published registration is mode 0600"
   [ "$(fm_pr_file_link_count "$dir/home/state/task-a.check.sh")" = 1 ] \
     && [ "$(fm_pr_file_link_count "$dir/home/state/task-a.pr-poll")" = 1 ] \
     && [ "$(fm_pr_file_link_count "$dir/home/state/task-a.pr-poll-registration")" = 1 ] \
@@ -839,10 +839,10 @@ SH
     [ ! -s "$dir/watch.err" ] || fail "concurrent watcher observed a partial artifact error"
     if [ -e "$dir/home/state/task-a.check.sh" ]; then
       cmp -s "$POLL" "$dir/home/state/task-a.check.sh" || fail "concurrent publication check bytes changed"
-      [ "$(file_mode "$dir/home/state/task-a.check.sh")" = 600 ] || fail "concurrent check mode was not private"
-      [ "$(file_mode "$dir/home/state/task-a.pr-poll")" = 600 ] || fail "concurrent sidecar mode was not private"
-      [ "$(file_mode "$dir/home/state/task-a.pr-poll-registration")" = 600 ] \
-        || fail "concurrent registration mode was not private"
+      fm_test_assert_private_mode "$dir/home/state/task-a.check.sh" 600 "concurrent check is private"
+      fm_test_assert_private_mode "$dir/home/state/task-a.pr-poll" 600 "concurrent sidecar is private"
+      fm_test_assert_private_mode "$dir/home/state/task-a.pr-poll-registration" 600 \
+        "concurrent registration is private"
       fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
         || fail "concurrent publication did not leave canonical provenance"
     else
@@ -921,7 +921,7 @@ test_migration_initializes_fresh_state() {
 
   [ "$rc" -eq 0 ] || fail "fresh-state migration failed: $(cat "$dir/migrate.err")"
   [ -d "$state" ] && [ ! -L "$state" ] || fail "fresh-state migration did not create an ordinary state directory"
-  [ "$(file_mode "$state")" = 700 ] || fail "fresh-state migration did not create state with mode 0700"
+  fm_test_assert_private_mode "$state" 700 "fresh-state migration created state with mode 0700" dir
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
   pass "migration creates and validates private state before watcher exclusion"
 }
@@ -1257,7 +1257,7 @@ test_quarantine_validation_and_retry_contract() {
   [ ! -e "$state/.pr-check-migration-v1" ] || fail "quarantine directory mode fault published a marker"
   FM_HOME="$dir/home" PATH="$BASE_PATH" "$MIGRATE" >/dev/null 2>/dev/null \
     || fail "quarantine directory mode fault did not recover on retry"
-  [ "$(file_mode "$state/.pr-check-quarantine")" = 700 ] || fail "retry did not repair quarantine directory mode"
+  fm_test_assert_private_mode "$state/.pr-check-quarantine" 700 "retry repaired the quarantine directory mode" dir
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
 
   dir=$(make_case quarantine-artifact-mode-retry)
@@ -1275,8 +1275,8 @@ test_quarantine_validation_and_retry_contract() {
   FM_HOME="$dir/home" PATH="$BASE_PATH" "$MIGRATE" >/dev/null 2>/dev/null \
     || fail "quarantine artifact mode fault did not recover on retry"
   quarantined=$(find "$state/.pr-check-quarantine" -name 'task-a.check.*' -type f | head -1)
-  [ -n "$quarantined" ] && [ "$(file_mode "$quarantined")" = 600 ] \
-    || fail "retry did not repair and validate the quarantine artifact"
+  [ -n "$quarantined" ] || fail "retry did not repair and validate the quarantine artifact"
+  fm_test_assert_private_mode "$quarantined" 600 "retry repaired and validated the quarantine artifact"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
 
   dir=$(make_case quarantine-artifact-device-retry)
@@ -2033,8 +2033,8 @@ test_nonexecuting_migration() {
     "canonical migration log mislabeled the rebuilt poll as unarmed"
   [ ! -e "$marker" ] || fail "migration executed legacy bytes"
   cmp -s "$POLL" "$state/task-a.check.sh" || fail "migration did not rebuild a canonical static poll"
-  [ "$(file_mode "$state/task-a.check.sh")" = 600 ] || fail "migrated check mode was not 0600"
-  [ "$(file_mode "$state/task-a.pr-poll")" = 600 ] || fail "migrated sidecar mode was not 0600"
+  fm_test_assert_private_mode "$state/task-a.check.sh" 600 "migrated check is mode 0600"
+  fm_test_assert_private_mode "$state/task-a.pr-poll" 600 "migrated sidecar is mode 0600"
   fm_pr_poll_artifacts_valid "$state" task-a "$POLL" || fail "canonical migration did not leave a validated armed poll"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
   find "$state/.pr-check-quarantine" -name 'task-a.check.*' -type f | grep . >/dev/null \
@@ -2092,7 +2092,7 @@ test_nonexecuting_migration() {
   [ ! -e "$state/task-b.pr-poll" ] || fail "ambiguous migration built a sidecar"
   find "$state/.pr-check-quarantine" -name 'task-b.check.*' -type f | grep . >/dev/null \
     || fail "ambiguous poll was not quarantined"
-  [ "$(file_mode "$state/.pr-check-migration.log")" = 600 ] || fail "migration diagnostics were not private"
+  fm_test_assert_private_mode "$state/.pr-check-migration.log" 600 "migration diagnostics are private"
   assert_grep 'task task-b: ambiguous or invalid legacy poll quarantined and unarmed' "$state/.pr-check-migration.log" \
     "migration diagnostic did not record the quarantined unarmed outcome"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
@@ -2143,7 +2143,7 @@ SH
       || fail "$marker_kind historical X shim transition failed: $(cat "$dir/migrate.err")"
     fmx_poll_shim_valid "$shim" "$dir/home" "$dir/root" \
       || fail "$marker_kind historical X shim was not replaced with the current identity"
-    [ "$(file_mode "$shim")" = 700 ] || fail "$marker_kind current X shim mode was not 0700"
+    fm_test_assert_private_mode "$shim" 700 "$marker_kind current X shim is mode 0700"
     [ ! -e "$executed" ] || fail "$marker_kind historical X shim was executed during migration"
     assert_valid_migration_marker "$state/.pr-check-migration-v1"
     assert_valid_scan_marker "$state/.pr-check-migration-scan-v1"
@@ -2172,7 +2172,7 @@ SH
   [ "$rc" -eq 0 ] || fail "standalone watcher did not complete the historical X transition"
   fmx_poll_shim_valid "$shim" "$dir/home" "$dir/root" \
     || fail "standalone watcher did not publish the current X identity"
-  [ "$(file_mode "$shim")" = 700 ] || fail "standalone watcher X shim mode was not 0700"
+  fm_test_assert_private_mode "$shim" 700 "standalone watcher X shim is mode 0700"
   [ ! -e "$executed" ] || fail "standalone watcher executed the historical X shim"
 
   for variant in linked symlink byte-mismatch mode-0700 mode-0750 mode-0777; do
@@ -2273,7 +2273,7 @@ test_direct_registration_refreshes_v1_x_shim() {
       || fail "$marker_kind direct registration did not preserve the v1 X shim: $(cat "$dir/register.err")"
     fmx_poll_shim_valid "$shim" "$dir/home" "$dir/root" \
       || fail "$marker_kind direct registration did not refresh the v1 X shim identity"
-    [ "$(file_mode "$shim")" = 700 ] || fail "$marker_kind refreshed X shim was not private and executable"
+    fm_test_assert_private_mode "$shim" 700 "$marker_kind refreshed X shim is private and executable"
     fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
       || fail "$marker_kind X shim refresh suppressed direct PR registration"
     assert_valid_migration_marker "$state/.pr-check-migration-v1"
@@ -2323,7 +2323,7 @@ test_bootstrap_migrates_before_other_mutations() {
     "$ROOT/bin/fm-bootstrap.sh" > "$dir/bootstrap.out" 2> "$dir/bootstrap.err" \
     || fail "bootstrap boundary failed"
   cmp -s "$POLL" "$state/task-a.check.sh" || fail "bootstrap did not migrate the legacy poll"
-  [ "$(file_mode "$state/task-a.check.sh")" = 600 ] || fail "bootstrap migration did not publish privately"
+  fm_test_assert_private_mode "$state/task-a.check.sh" 600 "bootstrap migration published privately"
   pass "bootstrap runs the non-executing migration at the locked session boundary"
 }
 

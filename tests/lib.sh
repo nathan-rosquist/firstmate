@@ -39,6 +39,13 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The one owner of "does an exact mode mean anything here", shared with
+# production. Sourced here rather than per-suite so fm_test_assert_private_mode
+# below asks the same question fm_pr_private_file_valid does, from the same
+# code. The library has no side effects on source.
+# shellcheck source=bin/fm-platform-lib.sh disable=SC1091
+. "$ROOT/bin/fm-platform-lib.sh"
+
 # --- reporters --------------------------------------------------------------
 
 fail() {
@@ -203,6 +210,48 @@ fm_test_pstate() {  # <pid> [ps-command]
     out=${out%% *}
   fi
   printf '%s' "$out"
+}
+
+# --- private-artifact assertion ---------------------------------------------
+#
+# fm_test_assert_private_mode <path> <expected-mode> <label> [file|dir]
+#
+# The test-side twin of fm_pr_private_file_valid: assert the exact mode where a
+# mode can actually be stored, and assert the structure that still holds where
+# it cannot. On a Git Bash noacl mount chmod is a silent no-op - a file chmod
+# 0600 reads back 644 and a directory chmod 0700 reads back 755 - so an exact
+# 0600/0700 equality there fails for a reason that has nothing to do with the
+# behavior under test. (The read-only bit IS stored: chmod 0444 reads back 444
+# and blocks writes, so a 0444 contract is real everywhere and must NOT come
+# through here.)
+#
+# The kind argument is deliberately explicit rather than inferred. Inferring it
+# from the path would make the structural branch assert only "it is whatever it
+# happens to be", which can never fail - exactly the vacuous green tick this
+# helper exists to avoid - and the expected mode is no signal either, since
+# 0700 is both a private directory and a private executable shim.
+#
+# Where the mode is unstorable this prints its own weakened ok line. A silent
+# pass would let a reader scanning the log read the suite's ordinary tick as
+# proof of privacy; the line says in words which weaker property was checked.
+fm_test_assert_private_mode() {  # <path> <expected-mode> <label> [file|dir]
+  local path=$1 expected=$2 label=$3 kind=${4:-file} actual
+  # Symlink first: a link to a real file passes -f, and a dangling one would
+  # otherwise be reported as merely missing.
+  [ ! -L "$path" ] || fail "$label: $path is a symlink"
+  [ -e "$path" ] || fail "$label: $path does not exist"
+  case "$kind" in
+    file) [ -f "$path" ] || fail "$label: $path is not a regular file" ;;
+    dir) [ -d "$path" ] || fail "$label: $path is not a directory" ;;
+    *) fail "fm_test_assert_private_mode: unknown kind '$kind'" ;;
+  esac
+  if fm_platform_fs_honors_modes "$path"; then
+    actual=$(fm_platform_file_mode "$path")
+    [ "$actual" = "$expected" ] \
+      || fail "$label: expected mode $expected, got ${actual:-<unreadable>}"
+    return 0
+  fi
+  printf 'ok - %s (mode unstorable on this filesystem; structure checked)\n' "$label"
 }
 
 # --- fakebin / PATH shims ---------------------------------------------------
