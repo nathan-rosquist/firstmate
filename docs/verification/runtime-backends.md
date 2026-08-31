@@ -682,6 +682,43 @@ The isolation guarantee is unchanged because `validate_spawn_worktree` reads the
 The pane-arrival read is a bounded best-effort confirmation: a non-empty path must resolve to the leased worktree or the spawn refuses, while an empty read means that platform cannot answer and the ship brief's own isolation assertion is the agent-side backstop.
 Windows now returns a non-empty path, so it takes the resolving branch rather than the backstop, and both sides of that comparison are normalized by `real_path_or_raw` before they are compared.
 
+
+#### Full task lifecycle with a live agent
+
+Measured 2026-08-30 on Windows 11 x86_64, MSYS2 Git Bash, no WSL, against Herdr 0.8.2 and Claude Code as the crewmate harness.
+Every earlier Windows result on this page is backend plumbing measured with no real agent launched; this is the first end-to-end run of a real firstmate task on this platform.
+An isolated throwaway `FM_HOME` and a throwaway origin-backed repository were used, so no fleet state was touched.
+
+The complete spine ran green:
+
+1. `bin/fm-session-start.sh` acquired the lock, ran bootstrap, drained the queue, emitted the supervision block, exit 0.
+2. `bin/fm-brief.sh <id> <repo> --scout` scaffolded the scout contract.
+3. `bin/fm-spawn.sh <id> <project> --scout` leased a Treehouse worktree, created the Herdr pane, launched a real agent, and recorded the task metadata, exit 0.
+4. The agent read its brief - the pane title became the brief's own subject - executed it, and wrote `data/<id>/report.md`.
+5. It appended its own status line, and `bin/fm-crew-state.sh` reconciled `working` to `done · source: status-log` carrying the agent's summary.
+6. `bin/fm-teardown.sh` returned the worktree to the pool, closed the exact pane, removed the task's state, preserved the scout report, and printed the backlog follow-up, exit 0.
+
+One refusal was exercised deliberately and behaved correctly.
+A first attempt used a repository with no `origin`; `fm-spawn` refused with "could not fetch origin for pooled worktree ...; refusing to launch from a potentially stale base" and returned the lease before exiting non-zero.
+No task record was created against the unverified base.
+
+Two operator-visible gaps, neither fatal:
+
+- **The harness trust dialog blocks the spawn until the supervisor clears it.**
+  Claude Code opened its "Is this a project you trust?" prompt and the agent sat there indefinitely.
+  Clearing it needs `herdr pane send-keys <pane> down` then `enter`; the agent then started immediately.
+  `AGENTS.md` section 7 already makes clearing a trust dialog the supervisor's job, so this is expected work rather than a defect, but on this platform nothing surfaces that the dialog is waiting.
+  `bin/fm-crew-state.sh` reports `state: working` both while parked at the dialog and while genuinely working.
+  The distinguishing evidence is only in the reason text - `harness busy (fm-spawn)` while parked, against `harness busy (claude-hook)` once the agent's own hook is registered - because a parked agent has not yet registered with Herdr's agent registry.
+  A supervisor reading the state word alone cannot tell a stuck spawn from a working one.
+- **A quarantined presentation journal survives teardown.**
+  `state/<id>.herdr-presentation` remained after a successful teardown, which reported "herdr presentation journal ... remains quarantined; no workspace cleanup was attempted".
+  That record is never task or endpoint authority, so this is a small orphaned file rather than a correctness problem.
+
+Three non-fatal warnings appeared during teardown and are recorded so they are not re-investigated as new:
+`lsof is unavailable; cannot resolve a process-group fallback for herdr task`,
+`fm-remote-job-reap-orphans: cannot scan this account's processes for remote job workers`,
+and the presentation-journal line above.
 ## Zellij
 
 The current compatibility floor and latest verification are Zellij 0.44.0 with `jq` on macOS aarch64.
