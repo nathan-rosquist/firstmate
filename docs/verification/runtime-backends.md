@@ -709,7 +709,7 @@ That block is independently resolved by no longer acquiring the worktree through
 The former worktree-discovery loop never observed the pane leaving the project and refused after its sixty polls with `treehouse get did not enter a worktree within 60s`, and the relaunch path refused for the same reason.
 Both refusals were the guard behaving correctly rather than a guard going missing: an unreadable cwd can never be mistaken for a confirmed worktree, so no spawn was recorded against an unverified directory.
 `fm-spawn.sh` now runs `treehouse get --lease --lease-holder <task-id>` in its own shell, which is non-interactive, opens no subshell, and prints only the worktree's absolute path to stdout, and then sends the pane a plain `cd` into that already-known path.
-The isolation guarantee is unchanged because `validate_spawn_worktree` reads the filesystem rather than the terminal, and the durable lease is returned on every failure path until the published task record owns the worktree.
+The isolation guarantee is unchanged because `validate_spawn_worktree` reads the filesystem rather than the terminal, and [`architecture.md`](../architecture.md#worktrees-not-branches-in-your-checkout) owns when the durable lease is returned.
 The pane-arrival read is a bounded best-effort confirmation: a non-empty path must resolve to the leased worktree or the spawn refuses, while an empty read means that platform cannot answer and the ship brief's own isolation assertion is the agent-side backstop.
 Windows now returns a non-empty path, so it takes the resolving branch rather than the backstop, and both sides of that comparison are normalized by `real_path_or_raw` before they are compared.
 

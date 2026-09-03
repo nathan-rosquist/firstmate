@@ -756,11 +756,15 @@ CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 SPAWN_LEASE_ABORT_RETURN=0
 SPAWN_LEASE_PATH=
+SPAWN_LAUNCHED=0
 
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
       "$FM_ROOT/bin/fm-busy-event.sh" "$STATE" "$ID" "${BUSY_GEN:-}"; then
     SPAWN_FRESH_COMMIT_PENDING=0
+    if [ -n "$SPAWN_LEASE_PATH" ] && [ "$SPAWN_LAUNCHED" != 1 ]; then
+      spawn_return_lease
+    fi
     return 0
   fi
   echo "error: $FM_BACKLOG_TRANSITION_ERROR" >&2
@@ -793,6 +797,7 @@ parse_orca_worktree_result() {
 spawn_return_lease() {
   local path=$SPAWN_LEASE_PATH
   SPAWN_LEASE_ABORT_RETURN=0
+  SPAWN_LEASE_PATH=
   [ -n "$path" ] || return 0
   if ! command -v treehouse >/dev/null 2>&1; then
     echo "warning: could not return the leased worktree $path after the aborted spawn of $ID; treehouse command not found" >&2
@@ -805,7 +810,7 @@ spawn_return_lease() {
 }
 
 spawn_abort_cleanup() {
-  local status=$?
+  local status=$? lease=
   if [ "$SPAWN_LEASE_ABORT_RETURN" = 1 ]; then
     spawn_return_lease
   fi
@@ -895,8 +900,15 @@ spawn_abort_cleanup() {
     fm_lock_release "$SPAWN_TASK_LOCK" || true
   fi
   if [ "$SPAWN_FRESH_COMMIT_PENDING" = 1 ]; then
+    lease=$SPAWN_LEASE_PATH
     if ! spawn_fresh_commit_rollback; then
       status=1
+    elif [ -n "$lease" ]; then
+      if [ -z "$SPAWN_LEASE_PATH" ]; then
+        echo "error: task $ID's record was removed and local copy $lease was returned to the pool - close out endpoint $T by hand, then re-run the spawn" >&2
+      else
+        echo "error: task $ID's record was removed but local copy $lease is still leased to it - close out endpoint $T and local copy $lease by hand, then re-run the spawn" >&2
+      fi
     fi
   fi
   if [ "$SPAWN_META_LOCK_HELD" = 1 ]; then
@@ -3078,12 +3090,14 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
 fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
-# The published record now names this worktree, so the task owns it and
-# bin/fm-teardown.sh's own guarded return is the only thing that may hand it
-# back. Disarming here rather than after the launch is deliberate: returning a
-# worktree that state/<id>.meta still points at would hard-reset it and put it
-# back in the pool under a record that still claims it, which is the same
-# boundary the orca worktree cleanup above uses.
+# The published record now names this worktree, so the task owns it and only
+# bin/fm-teardown.sh's own guarded return, or a record rollback that
+# un-publishes it before the agent is launched, may hand it back. Disarming
+# here rather than after the launch is deliberate: returning a worktree that
+# state/<id>.meta still points at would hard-reset it and put it back in the
+# pool under a record that still claims it, which is the same boundary the orca
+# worktree cleanup above uses. Once the launch command is sent, an agent may be
+# running inside the worktree, so a rollback keeps the lease and names it.
 SPAWN_LEASE_ABORT_RETURN=0
 
 sq_brief=$(shell_quote "$BRIEF")
@@ -3214,6 +3228,7 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
 fi
+SPAWN_LAUNCHED=1
 spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
