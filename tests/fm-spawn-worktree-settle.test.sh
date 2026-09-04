@@ -71,7 +71,14 @@ make_lease_case() {
   fm_git_worktree "$CASE_PROJ" "$CASE_WT" "wt-$name"
   fm_git_init_commit "$CASE_OTHER"
   mkdir -p "$CASE_HOME/data/$id"
-  printf 'brief for %s\n' "$id" > "$CASE_HOME/data/$id/brief.md"
+  cat > "$CASE_HOME/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise settled-worktree detection for $id.
+
+## Firstmate spec
+Record only the pane's stable worktree.
+EOF
   touch "$CASE_HOME/state/.last-watcher-beat"
   : > "$CASE_TREEHOUSE_LOG"
   : > "$CASE_TMUX_LOG"
