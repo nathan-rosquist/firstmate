@@ -51,9 +51,21 @@ pf_test_cleanup() {
     wait "$PF_TEST_LOCK_HOLDER" 2>/dev/null || true
     PF_TEST_LOCK_HOLDER=
   fi
+  # Stop the worker tree and wait for it to exit, the way
+  # tests/fm-remote-transport-lanes.test.sh does; a bare kill lets the worker's
+  # own shutdown writes race the fixture removal below. A case that restarted
+  # the worker leaves earlier generations behind with no recorded pid, so every
+  # worker still running this fixture's own copy is stopped too.
+  # shellcheck source=bin/fm-remote-job-lib.sh
+  . "$ROOT/bin/fm-remote-job-lib.sh"
   if [ -f "$pid_file" ]; then
     pid=$(cat "$pid_file" 2>/dev/null) || pid=
-    [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+    [ -z "$pid" ] || fm_remote_job_stop_worker_tree "$pid" || true
+  fi
+  if [ -n "$REMOTE_FIXTURE_ROOT" ]; then
+    for pid in $(pgrep -f "$REMOTE_FIXTURE_ROOT/bin/fm-remote-job-worker.sh" 2>/dev/null); do
+      fm_remote_job_stop_worker_tree "$pid" || true
+    done
   fi
   fm_test_cleanup
 }
