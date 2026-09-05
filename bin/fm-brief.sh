@@ -266,7 +266,8 @@ When a routed-work phase has a supervisor-actionable material change worth repor
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
 \`resolved\` separately closes an escalated decision or blocker, and only a \`resolved\` line carrying that decision's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
-The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
+Give every escalated decision or blocker its own key too, written BETWEEN the verb and the colon exactly as above: \`needs-decision [key=api-shape]: REST or RPC for the sync endpoint\`, because two unkeyed escalations share a single record.
+The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved [key=<slug>]: {how it cleared}\` yourself, carrying that same key in that same before-the-colon position, as your domain resumes.
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
 # Definition of done
@@ -349,9 +350,11 @@ The report is the only thing that survives, so anything worth keeping must be in
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   append \`needs-decision [key=<slug>]: {summary of options}\` and stop. Firstmate will reply with the decision.
+   Write that \`[key=<slug>]\` token BETWEEN the verb and the colon, never after it, and give every decision its own slug: \`needs-decision [key=api-shape]: REST or RPC for the sync endpoint\`.
+   A \`blocked\` line you open takes a key the same way. Two unkeyed escalations on one task share a single record, so answering either would close both.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [key=<slug>]: {how it cleared}\` yourself, carrying that same key in that same before-the-colon position, as you resume.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
@@ -384,6 +387,7 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+Write the PR description as short paragraphs and bullets, never one dense block of prose; that is a requirement about the description's shape, not text to copy into it.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     ;;
@@ -414,6 +418,7 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+Give that intent the shape of short paragraphs and bullets, never one dense block of prose, while still preserving every requirement above; that is a requirement about the intent's shape, not text to copy into it.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
@@ -468,9 +473,11 @@ $RULE1
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   append \`needs-decision [key=<slug>]: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
+   Write that \`[key=<slug>]\` token BETWEEN the verb and the colon, never after it, and give every decision its own slug: \`needs-decision [key=api-shape]: REST or RPC for the sync endpoint\`.
+   A \`blocked\` line you open takes a key the same way. Two unkeyed escalations on one task share a single record, so answering either would close both.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [key=<slug>]: {how it cleared}\` yourself, carrying that same key in that same before-the-colon position, as you resume.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.

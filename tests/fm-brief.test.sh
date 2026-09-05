@@ -319,6 +319,36 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
+# Both PR-producing modes must state the PR text's SHAPE as a property of the
+# deliverable, so a dense task section cannot become a mono-paragraph PR body.
+test_pr_modes_require_readable_intent_shape() {
+  local home id brief
+  home="$TMP_ROOT/intent-shape-home"
+  write_registry "$home"
+  id="brief-shape-nomistakes-a1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Give that intent the shape of short paragraphs and bullets, never one dense block of prose" "$brief" \
+    "no-mistakes DOD must require a readable intent shape"
+  assert_grep "that is a requirement about the intent's shape, not text to copy into it" "$brief" \
+    "no-mistakes DOD must mark the shape rule as form, not content to paste"
+  assert_grep "while still preserving every requirement above" "$brief" \
+    "no-mistakes DOD's shape rule must not weaken content preservation"
+  id="brief-shape-directpr-a2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Write the PR description as short paragraphs and bullets, never one dense block of prose" "$brief" \
+    "direct-PR DOD must require a readable PR description shape"
+  assert_grep "that is a requirement about the description's shape, not text to copy into it" "$brief" \
+    "direct-PR DOD must mark the shape rule as form, not content to paste"
+  id="brief-shape-localonly-a3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "short paragraphs and bullets" "$brief" \
+    "local-only brief produces no PR and must not carry a PR-text shape rule"
+  pass "fm-brief.sh: PR-producing modes require a readable intent shape"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -352,6 +382,62 @@ test_no_mistakes_dod_wording() {
   assert_grep "firstmate's authority check" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
+}
+
+# Every scaffold's escalation rule must state WHERE the decision key goes.
+# The parser accepts a token in either position (bin/fm-classify-lib.sh), but a
+# scaffold that never names the position, and never has the worker OPEN with a
+# key at all, leaves the common case unkeyed: two simultaneous decisions on one
+# task then share the "default" record and answering either closes both. The
+# rendered text must therefore ask for a key on the opening line, place it
+# between the verb and the colon, and show a concrete example.
+# shellcheck disable=SC2016  # single quotes are deliberate: the literal backticks
+# and `[key=...]` tokens are the scaffold text being matched, not expansions.
+test_scaffolds_state_decision_key_placement() {
+  local home id brief
+  home="$TMP_ROOT/decision-key-placement-home"
+  write_registry "$home"
+
+  id="brief-key-ship-a1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep 'append `needs-decision [key=<slug>]: {summary of options}`' "$brief" \
+    "ship brief must have the worker OPEN a decision with a key, not unkeyed"
+  assert_grep 'Write that `[key=<slug>]` token BETWEEN the verb and the colon, never after it' "$brief" \
+    "ship brief must state the key's position explicitly"
+  assert_grep '`needs-decision [key=api-shape]: REST or RPC for the sync endpoint`' "$brief" \
+    "ship brief must show a correctly placed key example"
+  assert_grep 'Two unkeyed escalations on one task share a single record' "$brief" \
+    "ship brief must say why an unkeyed escalation is unsafe"
+  assert_grep 'append `resolved [key=<slug>]: {how it cleared}` yourself, carrying that same key in that same before-the-colon position' "$brief" \
+    "ship brief's self-close must carry the key in the same stated position"
+  assert_no_grep 'same `[key=<slug>]` if you opened it with one' "$brief" \
+    "ship brief kept the old wording that never states where the key goes"
+
+  id="brief-key-scout-a2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep 'append `needs-decision [key=<slug>]: {summary of options}`' "$brief" \
+    "scout brief must have the worker open a decision with a key"
+  assert_grep 'Write that `[key=<slug>]` token BETWEEN the verb and the colon, never after it' "$brief" \
+    "scout brief must state the key's position explicitly"
+  assert_grep '`needs-decision [key=api-shape]: REST or RPC for the sync endpoint`' "$brief" \
+    "scout brief must show a correctly placed key example"
+  assert_no_grep 'same `[key=<slug>]` if you opened it with one' "$brief" \
+    "scout brief kept the old wording that never states where the key goes"
+
+  FM_SECONDMATE_CHARTER='fixture domain' FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" brief-key-sm-a3 --secondmate --no-projects >/dev/null 2>&1
+  brief="$home/data/brief-key-sm-a3/brief.md"
+  assert_grep 'Give every escalated decision or blocker its own key too, written BETWEEN the verb and the colon' "$brief" \
+    "secondmate charter must state the escalation key's position"
+  assert_grep '`needs-decision [key=api-shape]: REST or RPC for the sync endpoint`' "$brief" \
+    "secondmate charter must show a correctly placed key example"
+  assert_grep 'append `resolved [key=<slug>]: {how it cleared}` yourself, carrying that same key in that same before-the-colon position' "$brief" \
+    "secondmate charter's self-close must carry the key in the same stated position"
+  assert_no_grep 'keyed with `[key=<slug>]` if you opened it with one' "$brief" \
+    "secondmate charter kept the old wording that never states where the key goes"
+  pass "fm-brief.sh: every scaffold states decision-key placement with an example"
 }
 
 test_ship_project_memory_wording() {
@@ -755,6 +841,8 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_pr_modes_require_readable_intent_shape
+test_scaffolds_state_decision_key_placement
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
