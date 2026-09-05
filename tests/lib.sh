@@ -16,10 +16,10 @@
 # ROOT is exported as the firstmate repo root (this file lives in tests/), so a
 # sourcing test can use "$ROOT/bin/..." without recomputing it.
 
-# Idempotent guard: behavior-area helper files (secondmate-helpers.sh,
-# wake-helpers.sh) source this library for ROOT/fail/pass, and the test that
-# includes them may also source it directly. Re-sourcing must not wipe the
-# registered-cleanup array or reset state.
+# Idempotent guard: behavior-area helper files (tests/*-helpers.sh) source this
+# library for ROOT/fail/pass, and the test that includes them may also source it
+# directly. Re-sourcing must not wipe the registered-cleanup array or reset
+# state.
 if [ -n "${FM_TEST_LIB_SOURCED:-}" ]; then
   return 0
 fi
