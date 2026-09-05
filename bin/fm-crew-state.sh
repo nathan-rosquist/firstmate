@@ -35,6 +35,14 @@
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
 #      the same line of history). Local work that advanced past the run head, or
 #      diverged from it, invalidates attribution.
+#      One branch routinely carries BOTH a terminal run and a live rerun of the
+#      same submitted head - the normal supersession shape after a failed run -
+#      so among this branch's candidate runs an ACTIVE one always outranks a
+#      terminal one, and the most recent row wins within a class. A live run's
+#      head is often a pipeline-side commit this worktree never fetched, and
+#      that unresolvable head does not disqualify it (nm_head_admits_run). When
+#      a live run exists but cannot be bound to this worktree, nothing is
+#      attributed at all rather than reporting the terminal run it superseded.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -353,6 +361,36 @@ nm_ci_checks_state() {
     *) printf 'unknown' ;;
   esac
 }
+
+# Activity class of a run status word: `active` while the run is still
+# executing, `terminal` once it has stopped, `unknown` for an absent word. The
+# coarse runs list reports running/completed/failed/cancelled; `axi status`
+# reports the finer in-progress words (ci, fixing, awaiting_approval,
+# fix_review), which are all still active work on the branch.
+nm_status_activity() {  # <status-word>
+  case "$1" in
+    completed|failed|cancelled) printf 'terminal' ;;
+    '')                         printf 'unknown' ;;
+    *)                          printf 'active' ;;
+  esac
+}
+
+# Whether a candidate run for THIS crew's branch may be attributed, given its
+# head verdict (fm_nm_head_verdict) and its activity class. A proven `match` is
+# always attributable. An `unresolvable` head is attributable only while the run
+# is active: the pipeline pushes its fix commits to the run head, and a crew
+# worktree that never fetched them cannot resolve it, so treating that absence
+# as disqualifying is what let an older terminal run of the same submitted head
+# be reported instead of the live rerun. `mismatch` (proven different history)
+# and `none` (nothing to bind) are never attributable.
+nm_head_admits_run() {  # <head-verdict> <activity>
+  case "$1" in
+    match)        return 0 ;;
+    unresolvable) [ "$2" = active ] ;;
+    *)            return 1 ;;
+  esac
+}
+
 # Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
 # reports the active-or-most-recent run for the CURRENT branch when one
 # exists, else falls back to some other branch's run purely as informational
@@ -380,11 +418,16 @@ nm_ci_checks_state() {
 # "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
-nm_runs_status_for_branch() {  # <branch>
-  local branch=$1 out row st rest br sha
+# is a run for THIS branch active right now. Echoes the chosen row's status word
+# (running/completed/cancelled/failed), or empty when no run for the branch is
+# attributable within FM_CREW_STATE_RUNS_LIMIT rows. Passing `active-only`
+# restricts the answer to a live run, which is how the full-status path asks
+# whether a live rerun has superseded a terminal run; in that mode a live run
+# that exists but cannot be bound to this worktree echoes the `unbound-live`
+# sentinel, so the caller can tell it apart from no live run at all.
+nm_runs_status_for_branch() {  # <branch> [active-only]
+  local branch=$1 want=${2:-any} out row st rest br sha activity verdict
+  local active_pick='' terminal_pick='' saw_unbound_active=0
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
@@ -397,16 +440,37 @@ nm_runs_status_for_branch() {  # <branch>
     rest=${rest#* }
     rest=$(trim "$rest")
     sha=${rest%% *}
-    if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
-      if ! nm_coarse_head_matches_worktree "$sha"; then
-        continue
-      fi
-      printf '%s' "$st"
-      return 0
+    [ "$br" = "$branch" ] || continue
+    activity=$(nm_status_activity "$st")
+    verdict=$(fm_nm_head_verdict "$WT" "$sha")
+    if ! nm_head_admits_run "$verdict" "$activity"; then
+      [ "$activity" = active ] && saw_unbound_active=1
+      continue
+    fi
+    # Newest-first ordering makes the first admitted row of each class the most
+    # recent one, so later rows never overwrite an earlier pick.
+    if [ "$activity" = active ]; then
+      [ -n "$active_pick" ] || active_pick=$st
+    else
+      [ -n "$terminal_pick" ] || terminal_pick=$st
     fi
   done <<< "$out"
+  if [ -n "$active_pick" ]; then
+    printf '%s' "$active_pick"
+    return 0
+  fi
+  # An unbindable live run still proves this branch is running right now, so
+  # its terminal predecessor is not this crew's current state - report nothing
+  # and let the pane and status log speak instead of guessing. The active-only
+  # caller holds an admitted terminal run and needs this world distinguished
+  # from "no live run", so it receives the sentinel instead of the same
+  # empty answer.
+  if [ "$saw_unbound_active" = 1 ]; then
+    [ "$want" = active-only ] && printf 'unbound-live'
+    return 0
+  fi
+  [ "$want" = active-only ] && return 0
+  [ -n "$terminal_pick" ] && printf '%s' "$terminal_pick"
   return 0
 }
 
@@ -414,20 +478,26 @@ nm_runs_status_for_branch() {  # <branch>
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# 0 if the active axi-status run's head field matches this worktree's code
+# Head verdict for the axi-status run in $RUN_OUT against this worktree's code
 # identity. Branch match is a precondition (caller). Rule owned by
-# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
-nm_run_head_matches_worktree() {
+# fm_nm_head_verdict in bin/fm-nm-run-lib.sh.
+nm_run_head_verdict() {
   local run_head
   run_head=$(strip_quotes "$(nm_field head)")
-  fm_nm_head_matches_worktree "$WT" "$run_head"
+  fm_nm_head_verdict "$WT" "$run_head"
 }
 
-# Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
-# sha for this branch row matches the worktree head under the same rules as
-# nm_run_head_matches_worktree (equal, or local is ancestor of run tip).
-nm_coarse_head_matches_worktree() {  # <short-sha>
-  fm_nm_head_matches_worktree "$WT" "$1"
+# Activity class of the axi-status run in $RUN_OUT. A recorded outcome is the
+# run's terminal verdict, so it settles the class regardless of the status word;
+# otherwise the status word decides, and a run reporting neither is still an
+# active run (the run-step block below reads that same shape as "run active").
+nm_full_run_activity() {
+  local outcome status
+  outcome=$(strip_quotes "$(nm_field outcome)")
+  [ -n "$outcome" ] && { printf 'terminal'; return 0; }
+  status=$(strip_quotes "$(nm_field status)")
+  [ -n "$status" ] || { printf 'active'; return 0; }
+  nm_status_activity "$status"
 }
 
 HAVE_RUN=0
@@ -443,12 +513,32 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
+    run_activity=$(nm_full_run_activity)
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
+      && nm_head_admits_run "$(nm_run_head_verdict)" "$run_activity"; then
       HAVE_RUN=1
+      # A terminal run must never shadow a live rerun of the same branch. After
+      # a failed run the routine shape is exactly that: an older terminal run
+      # and a newer active one, often reporting the same submitted head, and
+      # `axi status` answers with only one of them. Ask the runs list for a live
+      # run before reporting this branch as finished. A live run that cannot be
+      # bound to this worktree withholds attribution entirely, matching the
+      # coarse path's honesty guard.
+      if [ "$run_activity" = terminal ]; then
+        LIVE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH" active-only)
+        if [ "$LIVE_STATUS" = unbound-live ]; then
+          HAVE_RUN=0
+        elif [ -n "$LIVE_STATUS" ]; then
+          RUN_SOURCE=coarse
+          COARSE_STATUS=$LIVE_STATUS
+        fi
+      fi
     else
-      # The active-or-most-recent run is for another branch, or same branch with
-      # a rewritten/diverged head (the CLI is alive and answered; only the
-      # attribution missed) - try the coarse fallback.
+      # The active-or-most-recent run is for another branch, or is one this
+      # worktree cannot claim (a rewritten or diverged head, or a terminal run
+      # whose head cannot be resolved here at all) - the CLI is alive and
+      # answered; only the attribution missed. Try the coarse fallback, which
+      # sees every run for this branch rather than just one.
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait

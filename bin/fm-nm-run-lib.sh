@@ -55,19 +55,40 @@ fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
 }
 
-# 0 if run head $2 matches worktree $1's code identity, per the same rule
-# everywhere this attribution is needed:
-#   - missing/empty head: cannot bind; reject
-#   - equal commits (short or full SHA): match
-#   - worktree HEAD is an ancestor of run head: match (pipeline fix commits on
-#     the same history advanced the run tip past local HEAD)
-#   - run head is a strict ancestor of worktree HEAD, or diverged: no match
-#     (local work advanced outside the run, or the branch tip was rewritten)
-fm_nm_head_matches_worktree() {  # <worktree> <run_head>
+# Classify run head $2 against worktree $1's code identity. Echoes one word:
+#   match        - equal commits (short or full SHA), or the worktree HEAD is an
+#                  ancestor of the run head (pipeline fix commits on the same
+#                  history advanced the run tip past local HEAD)
+#   mismatch     - resolvable here and proven to be different history: the run
+#                  head is a strict ancestor of the worktree HEAD (local work
+#                  advanced outside the run), or the two have diverged (the
+#                  branch tip was rewritten)
+#   unresolvable - the run head names a commit this worktree cannot resolve, so
+#                  there is no evidence either way. The routine cause is a
+#                  pipeline-side head whose fix commits were pushed but never
+#                  fetched into the crew worktree.
+#   none         - no head to bind at all: an absent or empty head field, or a
+#                  worktree whose own HEAD cannot be read
+# The `unresolvable` and `none` cases are deliberately distinct: absent evidence
+# about a real commit is weaker than having no commit named at all, and callers
+# that may prefer a live run over a stale one need to tell them apart.
+fm_nm_head_verdict() {  # <worktree> <run_head>
   local wt=$1 run_head=$2 local_full run_full
-  [ -n "$run_head" ] || return 1
-  local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
-  run_full=$(git -C "$wt" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) || return 1
-  [ "$run_full" = "$local_full" ] && return 0
-  git -C "$wt" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null
+  [ -n "$run_head" ] || { printf 'none'; return 0; }
+  local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || { printf 'none'; return 0; }
+  run_full=$(git -C "$wt" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
+    || { printf 'unresolvable'; return 0; }
+  [ "$run_full" = "$local_full" ] && { printf 'match'; return 0; }
+  if git -C "$wt" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null; then
+    printf 'match'
+  else
+    printf 'mismatch'
+  fi
+}
+
+# 0 only when run head $2 is proven to be worktree $1's own code identity, i.e.
+# the `match` verdict above. Every weaker verdict rejects, so a caller that only
+# asks this question never attributes a run on absent or ambiguous evidence.
+fm_nm_head_matches_worktree() {  # <worktree> <run_head>
+  [ "$(fm_nm_head_verdict "$1" "$2")" = match ]
 }

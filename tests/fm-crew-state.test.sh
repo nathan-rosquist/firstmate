@@ -1389,6 +1389,192 @@ test_local_advanced_past_run_head_invalidates() {
   pass "local work advanced past run head invalidates attribution"
 }
 
+# --- terminal-vs-live run attribution on one branch -------------------------
+# A branch routinely carries BOTH a terminal run and a live rerun of the same
+# submitted head - the normal supersession shape after a failed run. Reported
+# 2026-08-12 and again 2026-08-21: `no-mistakes runs` listed `failed <sha>` and
+# `running <sha>` side by side for one branch while this reader said `failed`,
+# because the terminal run's head matched the worktree exactly while the live
+# run's pipeline-side head (its pre-push fix commits) could not be resolved in
+# the crew worktree at all. A healthy, actively validating crew read as failed.
+
+test_live_rerun_outranks_terminal_run_on_same_branch() {
+  reset_fakes
+  local d short out
+  d=$(new_case live-rerun-vs-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-rerun
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rerun.meta" "window=fm:fm-rerun" "worktree=$d/wt" "kind=ship"
+  # `axi status` answers with the terminal run, whose head is this worktree's
+  # exact submitted head.
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-rerun)"
+  # The runs list shows the live rerun above it. Its head is the pipeline-side
+  # commit, which this worktree never fetched and cannot resolve.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-rerun 4d1dfff  2026-08-21 09:40
+  failed     fm/feat-rerun ${short}  2026-08-21 09:05
+EOF
+)"
+  out=$(run_crew_state "$d" rerun)
+  assert_contains "$out" "state: working" "live rerun outranks the terminal run it superseded"
+  assert_contains "$out" "source: run-step" "live rerun is still a run-step verdict"
+  assert_not_contains "$out" "state: failed" "terminal run must not shadow the live rerun"
+  pass "live rerun outranks a terminal run on the same branch"
+}
+
+test_live_rerun_wins_in_runs_list_over_terminal_same_head() {
+  reset_fakes
+  local d short out
+  d=$(new_case live-rerun-coarse)
+  make_repo_on_branch "$d/wt" fm/feat-rerun-coarse
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/rerunc.meta" "window=fm:fm-rerunc" "worktree=$d/wt" "kind=ship"
+  # The repo-wide answer belongs to another crew, so attribution goes through
+  # the coarse runs list, where the terminal row is the one whose head resolves.
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-21 09:50
+  running    fm/feat-rerun-coarse 4d1dfff  2026-08-21 09:40
+  failed     fm/feat-rerun-coarse ${short}  2026-08-21 09:05
+EOF
+)"
+  out=$(run_crew_state "$d" rerunc)
+  assert_contains "$out" "state: working" "runs-list attribution prefers the active row"
+  assert_contains "$out" "source: run-step" "runs-list active row -> run-step source"
+  assert_not_contains "$out" "state: failed" "resolvable terminal head must not win over an active run"
+  pass "runs-list attribution prefers a live rerun over a terminal same-head run"
+}
+
+test_genuinely_failed_latest_run_still_reads_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case genuine-failed)
+  make_repo_on_branch "$d/wt" fm/feat-genuine-fail
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/genfail.meta" "window=fm:fm-genfail" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-genuine-fail)"
+  # No live rerun anywhere: the failed run IS the current state.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-21 09:50
+  failed     fm/feat-genuine-fail ${short}  2026-08-21 09:05
+EOF
+)"
+  out=$(run_crew_state "$d" genfail)
+  assert_contains "$out" "state: failed" "a genuinely failed latest run still reads failed"
+  assert_contains "$out" "source: run-step" "failed run remains a run-step verdict"
+  pass "genuinely failed latest run still reads failed"
+}
+
+test_active_run_unresolvable_pipeline_head_is_attributed() {
+  reset_fakes
+  local d out
+  d=$(new_case unresolvable-active-head)
+  make_repo_on_branch "$d/wt" fm/feat-unresolvable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unres.meta" "window=fm:fm-unres" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'needs-decision: waiting on the gate\n' > "$d/state/unres.status"
+  # The live run reports its pipeline-side head, which this worktree cannot
+  # resolve at all. Absent evidence must not disqualify an ACTIVE run.
+  FM_FAKE_RUN_HEAD=4d1dfff2
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-unresolvable)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unres
+  out=$(run_crew_state "$d" unres)
+  assert_contains "$out" "state: working" "unresolvable pipeline-side head keeps the active run"
+  assert_contains "$out" "source: run-step" "active run with an unresolvable head -> run-step"
+  assert_contains "$out" "validating (running)" "the active run's own step is reported"
+  pass "an unresolvable pipeline-side head does not disqualify the active run"
+}
+
+test_terminal_run_unresolvable_head_is_not_attributed() {
+  reset_fakes
+  local d out
+  d=$(new_case unresolvable-terminal-head)
+  make_repo_on_branch "$d/wt" fm/feat-unres-term
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unresterm.meta" "window=fm:fm-unresterm" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing stage 2\n' > "$d/state/unresterm.status"
+  # A TERMINAL run still needs proof: an unresolvable head is not evidence that
+  # this worktree's code is what that run judged.
+  FM_FAKE_RUN_HEAD=8160fe17
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-unres-term)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unresterm
+  out=$(run_crew_state "$d" unresterm)
+  assert_not_contains "$out" "source: run-step" "terminal run with an unresolvable head is not attributed"
+  assert_contains "$out" "source: status-log" "falls back to current-state sources"
+  assert_contains "$out" "state: working" "status-log working: remains current"
+  pass "a terminal run with an unresolvable head is not attributed"
+}
+
+test_unbindable_live_run_reports_no_run_instead_of_terminal() {
+  reset_fakes
+  local d short diverged out
+  d=$(new_case unbindable-live-run)
+  make_repo_on_branch "$d/wt" fm/feat-unbindable
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  # A resolvable commit on genuinely different history (a rewritten tip).
+  git -C "$d/wt" checkout -q --orphan rewritten
+  git -C "$d/wt" commit -q --allow-empty -m 'rewritten tip'
+  diverged=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  git -C "$d/wt" checkout -q fm/feat-unbindable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unbind.meta" "window=fm:fm-unbind" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: rebuilding stage 2 after the rewrite\n' > "$d/state/unbind.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-21 09:50
+  running    fm/feat-unbindable ${diverged}  2026-08-21 09:40
+  failed     fm/feat-unbindable ${short}  2026-08-21 09:05
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unbind
+  out=$(run_crew_state "$d" unbind)
+  assert_not_contains "$out" "source: run-step" "an unbindable live run withholds run attribution"
+  assert_not_contains "$out" "state: failed" "the superseded terminal run is never reported"
+  assert_contains "$out" "source: status-log" "falls back honestly to current-state sources"
+  pass "an unbindable live run reports no run instead of its terminal predecessor"
+}
+
+test_full_status_terminal_run_yields_to_unbindable_live_rerun() {
+  reset_fakes
+  local d short diverged out
+  d=$(new_case full-status-unbindable-live)
+  make_repo_on_branch "$d/wt" fm/feat-full-unbind
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  # A resolvable commit on genuinely different history (a rewritten tip).
+  git -C "$d/wt" checkout -q --orphan rewritten
+  git -C "$d/wt" commit -q --allow-empty -m 'rewritten tip'
+  diverged=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  git -C "$d/wt" checkout -q fm/feat-full-unbind
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/fullunbind.meta" "window=fm:fm-fullunbind" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: rebuilding stage 2 after the rewrite\n' > "$d/state/fullunbind.status"
+  # Unlike the coarse case above, `axi status` itself answers the terminal run
+  # whose head matches this worktree exactly, while the runs list shows a live
+  # rerun on the same branch whose head resolves locally but on diverged
+  # history. The honesty guard must withhold attribution here too.
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-full-unbind)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-full-unbind ${diverged}  2026-08-21 09:40
+  failed     fm/feat-full-unbind ${short}  2026-08-21 09:05
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" fullunbind
+  out=$(run_crew_state "$d" fullunbind)
+  assert_not_contains "$out" "state: failed" "the superseded terminal run is never reported"
+  assert_not_contains "$out" "source: run-step" "an unbindable live rerun withholds run attribution"
+  assert_contains "$out" "source: status-log" "falls back honestly to current-state sources"
+  pass "full-status terminal run yields to an unbindable live rerun"
+}
+
 test_missing_run_head_falls_back_to_current_state() {
   reset_fakes
   local d out
@@ -1461,5 +1647,12 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
+test_live_rerun_outranks_terminal_run_on_same_branch
+test_live_rerun_wins_in_runs_list_over_terminal_same_head
+test_genuinely_failed_latest_run_still_reads_failed
+test_active_run_unresolvable_pipeline_head_is_attributed
+test_terminal_run_unresolvable_head_is_not_attributed
+test_unbindable_live_run_reports_no_run_instead_of_terminal
+test_full_status_terminal_run_yields_to_unbindable_live_rerun
 
 echo "all fm-crew-state tests passed"
