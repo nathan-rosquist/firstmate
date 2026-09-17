@@ -79,12 +79,13 @@ SH
   # fm-platform-lib.sh: fm-pr-lib.sh sources it from its own directory for the
   # filesystem mode-bit probe, so a fake root without it cannot load fm-pr-lib.
   ln -s "$ROOT/bin/fm-platform-lib.sh" "$fake/bin/fm-platform-lib.sh"
-  # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
-  # it for the relay-activation gate on the promised-public-reply check. Neither
-  # does anything in this fixture, which has no .env, but both are real siblings
-  # teardown now requires.
+  # fm-public-followup-lib.sh (and the fm-x-lib.sh and fm-env-lib.sh it
+  # sources): teardown sources it for the relay-activation gate on the
+  # promised-public-reply check. None does anything in this fixture, which has
+  # no .env, but all three are real siblings teardown now requires.
   ln -s "$ROOT/bin/fm-public-followup-lib.sh" "$fake/bin/fm-public-followup-lib.sh"
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
+  ln -s "$ROOT/bin/fm-env-lib.sh" "$fake/bin/fm-env-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-parent-lib.sh" "$fake/bin/fm-secondmate-parent-lib.sh"
   # Receiver-wake retirement sources the pending-reply library, which in turn
@@ -182,12 +183,13 @@ SH
   # fm-platform-lib.sh: fm-pr-lib.sh sources it from its own directory for the
   # filesystem mode-bit probe, so a fake root without it cannot load fm-pr-lib.
   ln -s "$ROOT/bin/fm-platform-lib.sh" "$fake/bin/fm-platform-lib.sh"
-  # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
-  # it for the relay-activation gate on the promised-public-reply check. Neither
-  # does anything in this fixture, which has no .env, but both are real siblings
-  # teardown now requires.
+  # fm-public-followup-lib.sh (and the fm-x-lib.sh and fm-env-lib.sh it
+  # sources): teardown sources it for the relay-activation gate on the
+  # promised-public-reply check. None does anything in this fixture, which has
+  # no .env, but all three are real siblings teardown now requires.
   ln -s "$ROOT/bin/fm-public-followup-lib.sh" "$fake/bin/fm-public-followup-lib.sh"
   ln -s "$ROOT/bin/fm-x-lib.sh" "$fake/bin/fm-x-lib.sh"
+  ln -s "$ROOT/bin/fm-env-lib.sh" "$fake/bin/fm-env-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-registry-lib.sh" "$fake/bin/fm-secondmate-registry-lib.sh"
   ln -s "$ROOT/bin/fm-secondmate-parent-lib.sh" "$fake/bin/fm-secondmate-parent-lib.sh"
   ln -s "$ROOT/bin/fm-pending-reply-lib.sh" "$fake/bin/fm-pending-reply-lib.sh"
