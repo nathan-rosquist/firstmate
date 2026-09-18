@@ -535,7 +535,6 @@ ledger_pass() { # <cursor> <after|through> <deadline>
     if [ $((now + 1)) -ge "$deadline" ]; then
       write_marker "$LEDGER_MARKER" "$id" || return 1
     fi
-    visited=$id
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
@@ -549,6 +548,7 @@ ledger_pass() { # <cursor> <after|through> <deadline>
     if [ "$LEDGER_REPORT_DELIVERED" -eq 1 ]; then
       write_marker "$LEDGER_MARKER" "$id" || return 1
     fi
+    visited=$id
   done
 }
 
@@ -669,11 +669,6 @@ scan() {
   local ledger_cursor='' ledger_rc=0 scan_due=0 scan_primed=0
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
-  # This invocation holds the scan lock for its whole life and nothing outside
-  # that lock writes these markers, so a marker temp file still here is the
-  # debris of an invocation the backstop killed mid-write, with no writer left
-  # to finish it.
-  rm -f "$SCAN_MARKER".?????? "$LEDGER_MARKER".?????? 2>/dev/null || true
   # One deadline for the whole invocation, owned by whichever pass is due, so
   # neither pass spends the budget the other one needs.
   deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
