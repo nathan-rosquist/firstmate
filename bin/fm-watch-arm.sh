@@ -72,9 +72,12 @@ WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
-# How long a freshly forked watcher may spend inside ONE startup phase (lock
-# claimed, identity published, beacon published - see the confirmation loop
-# below) before this arm gives up on it. The watcher's cold start is dominated
+# How long a freshly forked watcher may spend inside ONE startup phase (fork, no
+# lock claimed yet; lock, the lock names this child; identity, its identity is
+# published beside the lock; beacon, this child has touched the beacon - see the
+# confirmation loop below) before this arm gives up on it. A timed-out cycle
+# names the phase it stalled in, so all four appear in the ledger reason and on
+# stdout. The watcher's cold start is dominated
 # by process creation: roughly 200 forks and execs before its first beat. Git
 # Bash/MSYS pays ~70ms per process creation against well under 1ms on Linux
 # (Windows itself, MSYS fork emulation, and per-process endpoint inspection each

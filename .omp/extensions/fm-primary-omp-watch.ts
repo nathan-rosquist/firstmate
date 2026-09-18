@@ -131,9 +131,11 @@ const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(exte
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const retryLimit = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
-// 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
-// bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
-// SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
+// 35s on Windows covers ONE MSYS confirmation window (30s in bin/fm-watch-arm.sh)
+// and not the arm's budget for a whole cold start: that budget is per startup
+// phase, so a progressing child may legitimately span several windows and this
+// adapter can still retire an arm whose child is coming up. Conditioned on win32
+// so other platforms keep 12s.
 const armReadyTimeoutMs = positiveInteger(
   "FM_OMP_ARM_READY_TIMEOUT_MS",
   process.platform === "win32" ? 35000 : 12000,

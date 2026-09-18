@@ -866,8 +866,12 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
 # the lock and ~1s per later phase). The window therefore has to clear one delay
 # plus that cost, while two delays alone still have to exceed one window so a
 # bound over the whole start would fail this child even where the cost is
-# negligible. The stalled child's delay only has to outlast the window; the arm
-# tears it down at the bound, so a wide margin there costs no wall time.
+# negligible. The stalled child's delay only has to outlast the window, and it
+# is spent in one-second steps because bash defers a trap until the running
+# foreground command returns: a single long sleep would swallow the arm's
+# teardown TERM for the rest of the delay, and the arm blocks in wait(1) on the
+# child, so the whole remainder would be dead wall time in this case rather than
+# the bound the case is measuring.
 test_arm_confirmation_is_bounded_per_startup_phase() {
   local dir state fixbin armout armpid child i status leftover timeout=16 delay=11
   dir=$(make_case arm-phase-confirm)
@@ -881,13 +885,20 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 LOCK="$STATE/.watch.lock"
+phase_delay() {
+  local left=$1
+  while [ "$left" -gt 0 ]; do
+    sleep 1
+    left=$((left - 1))
+  done
+}
 fm_lock_try_acquire "$LOCK" || { echo "watcher: already running"; exit 0; }
 trap 'fm_lock_release "$LOCK"; exit 1' HUP INT TERM
 printf '%s\n' "$FM_HOME" > "$LOCK/fm-home"
 printf '%s\n' "$SCRIPT_DIR/fm-watch.sh" > "$LOCK/watcher-path"
-sleep "${FM_FAKE_WATCH_IDENTITY_DELAY:-0}"
+phase_delay "${FM_FAKE_WATCH_IDENTITY_DELAY:-0}"
 fm_pid_identity "${BASHPID:-$$}" > "$LOCK/pid-identity"
-sleep "${FM_FAKE_WATCH_BEACON_DELAY:-0}"
+phase_delay "${FM_FAKE_WATCH_BEACON_DELAY:-0}"
 touch "$STATE/.last-watcher-beat"
 while :; do sleep 1; done
 SH
