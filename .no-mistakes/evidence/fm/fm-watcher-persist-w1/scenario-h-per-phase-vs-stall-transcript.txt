@@ -1,0 +1,24 @@
+### Scenario H: the per-phase budget confirms a slow child but still tears down a stalled one
+The arm under test is the real bin/fm-watch-arm.sh; only the watcher is a stand-in whose per-phase timing this run controls.
+
+--- H1 progressing child: FM_ARM_CONFIRM_TIMEOUT=8 per phase, 6s spent in EACH of two phases (12s total, more than one 9s window) ---
+t+18s  watcher: started pid=1082207 (beacon fresh)
+child pid=1082207 still alive: yes
+
+--- H2 stalled child: same 8s budget, but 11s spent inside the single identity phase ---
+t+21s  arm exit=1
+watcher: FAILED - no live watcher with a fresh beacon
+lifecycle ledger record (state/.watch-cycle-exits.log):
+    arm_pid=1082729
+    watcher_pid=1082770
+    origin=started
+    started_at=1789725283
+    ended_at=1789725296
+    exit_code=1
+    signal=none
+    reason=confirmation-timeout:identity
+    beacon_age=999999
+    lock_before=pid:none|identity:none
+    lock_after=pid:none|identity:none
+    successor=none
+stalled child pid=1082770 still alive: no

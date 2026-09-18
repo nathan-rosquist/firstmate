@@ -1,0 +1,26 @@
+### Scenario A: arm cold start holds continuous supervision (Git Bash, OSTYPE=cygwin)
+$ FM_HOME=/tmp/fm-live-cold.WohM9X bin/fm-watch-arm.sh   (real arm, real bin/fm-watch.sh, default FM_ARM_CONFIRM_TIMEOUT)
+verdict line after 18s:
+watcher: started pid=1060332 (beacon fresh)
+
+$ readlink state/.watch.lock ; cat state/.watch.lock/pid
+/c/Users/nathan.rosquist/AppData/Local/Temp/fm-live-cold.WohM9X/state/.watch.lock.owner.GwdADW
+1060332
+
+$ ps -p <child>  (watcher process is visible)
+      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+  1060332 1060285 1060252      34500  ?           4096 02:43:04 /usr/bin/bash
+
+beacon samples (state/.last-watcher-beat mtime) over 70s of unattended running:
+  t+19s beat_mtime=1789724598 watcher_alive=yes arm_alive=yes
+  t+29s beat_mtime=1789724598 watcher_alive=yes arm_alive=yes
+  t+39s beat_mtime=1789724598 watcher_alive=yes arm_alive=yes
+  t+50s beat_mtime=1789724625 watcher_alive=yes arm_alive=yes
+  t+61s beat_mtime=1789724625 watcher_alive=yes arm_alive=yes
+  t+71s beat_mtime=1789724652 watcher_alive=yes arm_alive=yes
+  t+82s beat_mtime=1789724652 watcher_alive=yes arm_alive=yes
+  t+92s beat_mtime=1789724652 watcher_alive=yes arm_alive=yes
+distinct beacon advances observed after confirmation: 2
+
+$ cat state/.watch-cycle-exits.log
+(no cycle exit recorded - the cycle is still live)

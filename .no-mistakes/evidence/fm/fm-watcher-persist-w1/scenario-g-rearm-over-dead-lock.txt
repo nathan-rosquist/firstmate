@@ -1,0 +1,9 @@
+### Scenario G (adversarial): a killed watcher leaves its lock behind; the next unattended arm must still confirm a fresh watcher
+arm 1: watcher: started pid=1079047 (beacon fresh)
+/usr/bin/bash: line 17: 1079031 Killed                     FM_HOME="$HOMEDIR" "$ROOT/bin/fm-watch-arm.sh" > "$HOMEDIR/arm1.out" 2>&1
+after kill -9 of watcher pid=1079047: lock still names 1079047 ; that pid alive: no
+
+$ bin/fm-watch-arm.sh   # re-arm over the dead holder
+arm 2 after 28s: watcher: started pid=1079630 (beacon fresh)
+lock now names pid=1079630 (previous dead holder was 1079047); alive: yes
+beacon age: 3s

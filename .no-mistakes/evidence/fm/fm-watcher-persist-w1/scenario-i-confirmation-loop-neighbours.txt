@@ -1,0 +1,5 @@
+ok - arm attaches to a peer watcher after child stands down and surfaces a missing successor
+ok - arm reports FAILED and exits non-zero when no fresh watcher can be confirmed
+ok - arm cleans child watcher and temp output on HUP
+
+(exit code: 0, elapsed 110s; other exits of the confirmation loop this change rewrote: stand-down to a peer, typed failure, HUP teardown)

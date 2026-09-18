@@ -1,0 +1,3 @@
+ok - watch restart attaches to a verified healthy peer and later surfaces a successor gap
+
+(exit code: 0, elapsed 43s)

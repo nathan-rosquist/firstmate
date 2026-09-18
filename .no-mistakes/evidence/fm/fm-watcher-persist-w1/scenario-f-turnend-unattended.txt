@@ -1,0 +1,18 @@
+### Scenario F: with the arm holding a cycle, a Claude turn end no longer needs an operator
+home: /tmp/fm-live-guard.Bq9Sn6 (git init + AGENTS.md + bin/ + state/t1.meta => supervision NEEDED, real primary scope)
+
+$ FM_HOME=$HOME bin/fm-watch-arm.sh
+watcher: started pid=1077263 (beacon fresh)
+
+$ echo <Stop payload> | bin/fm-turnend-guard.sh --claude   # supervised turn end
+exit=0  (0 = turn may end unattended)
+stderr: 
+
+--- adversarial: kill the watcher, let the beacon go stale, ask again ---
+exit=2  (2 = guard blocks the turn end)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  TURN WOULD END BLIND - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher holds this home lock (last beat: 16s ago).
+●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

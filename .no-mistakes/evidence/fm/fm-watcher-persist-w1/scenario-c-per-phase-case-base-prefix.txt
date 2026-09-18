@@ -1,0 +1,3 @@
+not ok - arm did not confirm a child that reached every startup phase inside the window: watcher: FAILED - no live watcher with a fresh beacon
+
+(runner exit code: 1, elapsed 41s; arm under test = bin/fm-watch-arm.sh at base commit 29b5a0d)

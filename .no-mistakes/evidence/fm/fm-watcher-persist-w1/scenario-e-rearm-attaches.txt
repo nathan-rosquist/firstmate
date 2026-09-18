@@ -1,0 +1,12 @@
+### Scenario E: a second arm on a supervised home attaches instead of starting a duplicate
+$ FM_HOME=/tmp/fm-live-attach.MjPsce bin/fm-watch-arm.sh   # arm 1
+watcher: started pid=1075089 (beacon fresh)
+
+$ FM_HOME=/tmp/fm-live-attach.MjPsce bin/fm-watch-arm.sh   # arm 2, while arm 1 holds the cycle
+watcher: attached pid=1075089 (beacon 8s)
+
+live fm-watch.sh processes in this home after both arms:
+  lock pid still = 1075089   (unchanged: 1075089)
+  watcher alive: yes
+  arm1 alive: yes; arm2 alive: yes
+  beacon age: 9s
