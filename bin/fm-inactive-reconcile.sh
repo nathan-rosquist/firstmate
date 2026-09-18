@@ -33,20 +33,25 @@
 # that --startup performs the same scan immediately in the locked session
 # start's deferred worker.
 #
-# One invocation spends one aggregate FM_INACTIVE_RECONCILE_BUDGET_SECS
-# deadline (default 10, valid 1..30), started before the ledger pass and shared
-# by both passes. Each pass owns a durable cursor - .inactive-outcome-ledger
-# for the ledger pass, .inactive-outcome-reconcile for the scan - walks the
-# children after it, wraps through the earlier ones once that completes, and
-# resumes after its last visited child on the next invocation. A pass checks
-# the deadline before it records a child as visited, so stopping on the
+# One invocation spends one FM_INACTIVE_RECONCILE_BUDGET_SECS deadline
+# (default 10, valid 1..30), owned outright by whichever pass is due rather
+# than shared between them. Dueness is settled once, before either pass runs:
+# when --startup was passed or the scan marker has reached
+# FM_INACTIVE_RECONCILE_SECS the scan is due and owns the whole budget, and the
+# ledger pass sits that invocation out; otherwise the ledger pass owns it. At
+# the default poll and cadence that gives the ledger pass almost every
+# invocation and gives the scan an unshared budget on the invocations where it
+# actually has work.
+# Each pass owns a durable cursor - .inactive-outcome-ledger for the ledger
+# pass, .inactive-outcome-reconcile for the scan - walks the children after it,
+# wraps through the earlier ones once that completes, and resumes after its
+# last visited child on the next invocation, so the pass that yields an
+# invocation resumes where it stopped rather than losing its place. A pass
+# checks the deadline before it records a child as visited, so stopping on the
 # deadline never advances a cursor past a child it did not examine.
 # The scan additionally visits its first due child with at least a one-second
 # state-read bound, because whole-second arithmetic can otherwise round a small
-# budget to zero mid-scan. When the ledger pass spends the whole deadline the
-# scan is left entirely for the next invocation, with its own cursor and
-# cadence marker untouched: the remaining budget cannot cover one authoritative
-# state read, so spending it would retire a child's turn without examining it.
+# budget to zero mid-scan.
 # A process-group kill one second after the budget remains as a backstop for an
 # invocation wedged in an unbounded wait (for example a live-held wake-queue
 # lock), so the clean deadline path is not racing its own backstop. That kill
@@ -464,9 +469,10 @@ report_child_ledger_locked() { # <id> <meta>
 }
 
 # Every direct child's ledger, under its meta lock, from <cursor> onward within
-# the invocation's aggregate <deadline>. It runs on every poll in a secondmate
-# home; a delivery failure is already queued as a notice and never fails the
-# scan. Returns 3 when the deadline stopped the pass, exactly as scan_pass does.
+# the invocation's <deadline>. It runs in a secondmate home on every poll that
+# the inactive scan is not due to own; a delivery failure is already queued as a
+# notice and never fails the scan. Returns 3 when the deadline stopped the pass,
+# exactly as scan_pass does.
 #
 # Per-child work here is file reads and one meta lock rather than an
 # authoritative state read, so this pass takes no per-child bound of its own and
@@ -616,13 +622,18 @@ scan_pass() { # <cursor> <after|through> <deadline> <secondmate-id-or-empty>
 
 scan() {
   local startup=${1:-0} self='' cursor deadline rc=0 marker_rc=0
-  local ledger_cursor='' ledger_rc=0
+  local ledger_cursor='' ledger_rc=0 scan_due=0
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
-  # One deadline for the whole invocation, started before the ledger pass so
-  # that pass spends the budget rather than overrunning it into the backstop.
+  # One deadline for the whole invocation, owned by whichever pass is due, so
+  # neither pass spends the budget the other one needs.
   deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
-  if self=$(home_secondmate_id); then
+  if [ "$startup" = 1 ] || [ "$(scan_marker_age)" -ge "$FM_INACTIVE_RECONCILE_SECS" ]; then
+    scan_due=1
+  fi
+  self=$(home_secondmate_id) || { marker_rc=$?; self=''; }
+  if [ "$scan_due" != 1 ]; then
+    [ -n "$self" ] || return 0
     # The ledger-first delivery is per poll, not per cadence, and resumes from
     # its own cursor rather than restarting at the first child every poll.
     ledger_cursor=$(marker_cursor "$LEDGER_MARKER")
@@ -636,16 +647,6 @@ scan() {
     elif [ "$ledger_rc" -ne 3 ]; then
       return "$ledger_rc"
     fi
-  else
-    marker_rc=$?
-    self=''
-  fi
-  # The ledger pass spent the whole budget. Leave the scan's cursor and cadence
-  # marker exactly as they were: what is left cannot cover one authoritative
-  # state read, and starting the scan anyway would retire a child's turn
-  # without examining it.
-  [ "$ledger_rc" -ne 3 ] || return 0
-  if [ "$startup" != 1 ] && [ "$(scan_marker_age)" -lt "$FM_INACTIVE_RECONCILE_SECS" ]; then
     return 0
   fi
   cursor=$(scan_marker_cursor)

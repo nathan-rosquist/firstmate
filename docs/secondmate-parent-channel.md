@@ -33,7 +33,7 @@ Every captain-facing outcome that leaves durable evidence in the mate home is pu
 | An outcome that exists only in the mate's reasoning | none | the charter and the `AGENTS.md` carve-outs only |
 
 The ledger delivery reads files only: it calls no harness, no forge, and no current-state reader, so it is identical for every harness and runtime backend.
-It still spends real time per child, so it runs inside the same aggregate budget as the inactive scan beside it and resumes from its own durable position: in a home holding more children than one budget can carry, the children the budget did not reach are delivered on the following polls rather than being skipped or re-walked from the start, and `bin/fm-inactive-reconcile.sh`'s header owns that contract.
+It still spends real time per child, so it runs inside the invocation budget, which it owns outright on the polls where the inactive scan beside it is not due, and resumes from its own durable position: in a home holding more children than one budget can carry, the children the budget did not reach are delivered on the following polls rather than being skipped or re-walked from the start, and `bin/fm-inactive-reconcile.sh`'s header owns that contract.
 Each delivery is keyed with the first eight hexadecimal characters of its receipt fingerprint and appended at most once by exact line, and the ledger path reuses the inactive scan's per-fingerprint receipts, so a replayed poll or restart cannot deliver an event twice while a genuinely new terminal event is delivered again.
 A duplicate line is harmless and a missed one is not, so the mate may still append its own judgement about a delivered outcome, and the parent reads the script's line as the fact and the mate's line as commentary.
 For marked replies, the report helper accepts no caller-selected destination and uses the channel resolver for both local and remote homes; its script header owns the exact invocation contract.
@@ -45,7 +45,7 @@ A missed-reply escalation includes the complete first sighting path and line num
 
 - No mirror of the mate's chat: chat can mix outcomes with other conversation, so choosing which sentence is an outcome would itself be model behavior, and every harness exposes turn text differently.
 - No threshold escalation of a child's open decision or blocker: a decision the mate escalates is a captain hold, which is published; a decision the mate neither answers nor escalates is a supervision-quality question, separable from channel delivery.
-- No second watcher or standalone scanner: a lightweight ledger pass runs inside the existing inactive-outcome command on every watcher poll and reuses its receipts and upstream append.
+- No second watcher or standalone scanner: a lightweight ledger pass runs inside the existing inactive-outcome command on the watcher polls the inactive scan is not due to own, and reuses its receipts and upstream append.
 - No orphan lifecycle: teardown refuses instead of removing an undelivered outcome, the same way it refuses on other unlanded conditions.
 
 ## Regression coverage
