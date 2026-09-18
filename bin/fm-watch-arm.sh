@@ -599,7 +599,7 @@ while :; do
     confirm_phase=$phase
     confirm_deadline=$((SECONDS + CONFIRM_TIMEOUT + 1))
   fi
-  if [ "$phase" = beacon ] || [ "$entered_identity" -eq 1 ] || { [ -n "$lock_pid" ] && [ "$lock_pid" != "$child" ]; }; then
+  if [ "$phase" = beacon ] || [ "$entered_identity" -eq 1 ] || { [ -n "$lock_pid" ] && [ "$lock_pid" != "$child" ] && fm_pid_alive "$lock_pid"; }; then
     if healthy_watcher; then
       if [ "$HEALTHY_PID" = "$child" ]; then
         cycle_refresh_lock_before
