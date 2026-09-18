@@ -862,17 +862,30 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
 # beside a stand-in watcher whose phase timing the test controls.
 #
 # The delay only sets the controlled part of a phase: the rest is the platform's
-# own process-creation cost inside it (measured on Git Bash/MSYS at ~3s to reach
-# the lock and ~1s per later phase). The window therefore has to clear one delay
-# plus that cost, while two delays alone still have to exceed one window so a
-# bound over the whole start would fail this child even where the cost is
-# negligible. The stalled child's delay only has to outlast the window, and is
+# own process-creation cost inside it. Two constraints fix the constants, and
+# both must hold:
+#   2*delay > timeout+1          - two phases the child passes must together
+#                                  outlast one window, so a bound over the whole
+#                                  cold start would still fail this child and
+#                                  the case discriminates the fix from its
+#                                  predecessor
+#   (timeout+1) - delay > cost   - the headroom left inside one window must
+#                                  cover the worst per-phase platform cost
+# Idle Git Bash/MSYS measures that cost at ~3s to reach the lock and ~1s per
+# later phase, but this suite documents (see the immediate-wake case above) the
+# same class of process-creation-dominated work inflating 1.9-2.3s idle to
+# 9.1-13.1s at 3x CPU oversubscription, a 4-6x factor that puts the 3s lock step
+# at 12-18s. timeout=24 with delay=13 satisfies both constraints (26 > 25, and
+# 12s of headroom) and is the most headroom the first constraint allows, since
+# it caps headroom at (timeout+1)/2. These are derived from that measured worst
+# case, not raised until the suite passed.
+# The stalled child's delay only has to outlast the window, and is
 # kept just past it: bash defers a trap until the running foreground command
 # returns, so the child cannot act on the arm's teardown TERM until its sleep
 # ends, and the arm blocks in wait(1) meanwhile. Any margin beyond the deadline
 # is therefore dead wall time in this case rather than the bound it measures.
 test_arm_confirmation_is_bounded_per_startup_phase() {
-  local dir state fixbin armout armpid child i status leftover timeout=16 delay=11
+  local dir state fixbin armout armpid child i status leftover timeout=24 delay=13
   dir=$(make_case arm-phase-confirm)
   state="$dir/state"
   fixbin="$dir/fixbin"

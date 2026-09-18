@@ -571,6 +571,11 @@ owned_child_finished() {
 # 31s window, measured 2026-09-17), which ordinary contention consumed, and the
 # arm then killed a healthy child on its way to its first beat.
 #
+# The OpenCode, Pi and omp adapters' Windows ready budgets do not yet cover this
+# per-phase total, so they can still retire an arm whose child is progressing;
+# closing that is follow-up task fm-adapter-arm-timeout-w1, and those budgets
+# must be DERIVED from (FM_ARM_CONFIRM_TIMEOUT + 1) x phase-count, not hardcoded.
+#
 # The beacon step asks whether the beacon is newer than this arm's own child
 # output file, created immediately before the fork: a home that was supervised
 # before still holds a beacon from the previous cycle, and mere existence would
@@ -579,10 +584,20 @@ owned_child_finished() {
 # The step reads use shell builtins only: every fork this loop spends competes
 # with the child for the same serialized process-creation path, and the earlier
 # ten-fork iteration measurably slowed the child's own startup on MSYS. The full
-# fm_watcher_healthy proof, which forks, runs on the single poll that first
-# observes the identity step (an inherited beacon still inside GRACE confirms
-# this child there, as it always has), on every poll once this child's own
-# beacon appears, and when a foreign holder appears and attach must be judged.
+# fm_watcher_healthy proof, which forks, is therefore gated on the cheap reads,
+# and the gate is LOSSLESS - every state it skips is one the proof provably
+# fails. It runs only when the lock names a live pid and either that pid is
+# foreign (attach must be judged) or it is this child with pid-identity
+# published and a beacon file present. An empty or dead lock pid fails
+# fm_pid_alive; this child without a published identity fails the identity check
+# in fm_watcher_lock_matches_pid; a missing beacon makes fm_path_age report
+# 999999 so the age check fails. So the proof is skipped through the fork and
+# lock steps always, and through the identity step too in a fresh home that
+# holds no beacon file at all. A home whose beacon exists but has aged past
+# GRACE still re-pays the proof on every identity-step poll until this child's
+# first beat, because beacon age cannot be read without a fork; that cost now
+# lands inside a window sized for that one step rather than inside a single
+# budget for the whole cold start.
 # $SECONDS is bash's forkless whole-second clock; the extra rounding second
 # keeps a one-second budget from collapsing at a boundary, exactly as the
 # date(1)-based deadline did before.
@@ -599,13 +614,13 @@ while :; do
       [ "$BEAT" -nt "$child_out" ] && phase=beacon
     fi
   fi
-  entered_identity=0
   if [ "$phase" != fork ] && [ "$phase" != "$confirm_phase" ]; then
-    [ "$phase" = identity ] && entered_identity=1
     confirm_phase=$phase
     confirm_deadline=$((SECONDS + CONFIRM_TIMEOUT + 1))
   fi
-  if [ "$phase" = beacon ] || [ "$entered_identity" -eq 1 ] || { [ -n "$lock_pid" ] && [ "$lock_pid" != "$child" ] && fm_pid_alive "$lock_pid"; }; then
+  if [ -n "$lock_pid" ] && fm_pid_alive "$lock_pid" &&
+    { [ "$lock_pid" != "$child" ] ||
+      { [ -s "$WATCH_LOCK/pid-identity" ] && [ -e "$BEAT" ]; }; }; then
     if healthy_watcher; then
       if [ "$HEALTHY_PID" = "$child" ]; then
         cycle_refresh_lock_before
