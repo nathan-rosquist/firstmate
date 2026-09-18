@@ -518,6 +518,7 @@ arm-launched:   lock pid at +8.1s, first beacon at +17.7s, "watcher: started" at
 ```
 
 Observed guarantee: an arm-launched child forked from a bash whose parent is a native Windows process (MSYS reports its ppid as 1) held the singleton lock and advanced the beacon every poll for the whole observation window, so the child neither exits early nor is orphaned at the MSYS/native boundary; before the per-phase bound the same start left about 10s of headroom inside the 31s window, and the arm's own ten-fork poll iteration accounted for the difference between the bare and arm-launched first beat.
+The arm-launched row above predates this change: the confirmation loop now reads each startup step with shell builtins and forks the health proof only when the lock names a live pid it must judge, so the arm's own contribution to its child's first beat is smaller than measured here.
 `tests/fm-watcher-lock.test.sh` pins the per-phase bound with a stand-in watcher whose phase durations each fit the window while their sum does not, and its healthy-peer restart case uses a TERM-ignoring shell peer because Cygwin's `kill` cannot signal a native process and terminates it instead.
 
 Deterministic entry points:
