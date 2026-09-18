@@ -315,12 +315,6 @@ write_scan_marker() { # <cursor>
   write_marker "$SCAN_MARKER" "$1"
 }
 
-ledger_marker_cursor() { marker_cursor "$LEDGER_MARKER"; }
-
-write_ledger_marker() { # <cursor>
-  write_marker "$LEDGER_MARKER" "$1"
-}
-
 meta_field() {
   grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
@@ -495,7 +489,7 @@ ledger_pass() { # <cursor> <after|through> <deadline>
     esac
     [ "$(meta_field "$meta" kind)" != secondmate ] || continue
     [ "$(date +%s)" -lt "$deadline" ] || return 3
-    write_ledger_marker "$id" || return 1
+    write_marker "$LEDGER_MARKER" "$id" || return 1
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
@@ -631,14 +625,14 @@ scan() {
   if self=$(home_secondmate_id); then
     # The ledger-first delivery is per poll, not per cadence, and resumes from
     # its own cursor rather than restarting at the first child every poll.
-    ledger_cursor=$(ledger_marker_cursor)
+    ledger_cursor=$(marker_cursor "$LEDGER_MARKER")
     valid_id "$ledger_cursor" || ledger_cursor=''
     ledger_pass "$ledger_cursor" after "$deadline" || ledger_rc=$?
     if [ "$ledger_rc" -eq 0 ] && [ -n "$ledger_cursor" ]; then
       ledger_pass "$ledger_cursor" through "$deadline" || ledger_rc=$?
     fi
     if [ "$ledger_rc" -eq 0 ]; then
-      write_ledger_marker '' || return 1
+      write_marker "$LEDGER_MARKER" '' || return 1
     elif [ "$ledger_rc" -ne 3 ]; then
       return "$ledger_rc"
     fi
