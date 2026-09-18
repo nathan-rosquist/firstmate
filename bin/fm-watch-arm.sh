@@ -27,10 +27,15 @@
 # confirmation is bounded per startup PHASE by FM_ARM_CONFIRM_TIMEOUT (the
 # confirmation loop below owns the phases), never over the whole cold start, so
 # a slow platform cannot make this arm tear down a child that is still coming
-# up. It prints exactly one unambiguous status line:
+# up. It prints exactly one unambiguous verdict line, preceded on the
+# confirmation-timeout path by one diagnostic line naming the stalled phase:
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
+#   watcher: child pid=<N> stalled in startup phase <phase> for <T>s
+#                                                        - diagnostic only, never a verdict; emitted
+#                                                          immediately before the FAILED line below
+#                                                          when a startup phase ran out its budget
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
