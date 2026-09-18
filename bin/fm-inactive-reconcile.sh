@@ -51,9 +51,11 @@
 # --startup is the exception, and runs BOTH passes on the one invocation: the
 # ledger delivery first, then the scan, and the scan takes a FRESH deadline
 # rather than whatever the ledger pass left it, so it always enters with a full
-# unshared budget for its authoritative state reads. A --startup invocation can
-# therefore spend up to two budgets, once per session, and its outer backstop is
-# widened to match; ordinary polls keep one deadline and the tighter backstop.
+# unshared budget for its authoritative state reads. A --startup invocation in a
+# secondmate home therefore spends up to two budgets, once per session, and its
+# outer backstop is widened to match. A main home has no parent channel, so the
+# ledger pass never runs there and --startup spends one budget like any other
+# poll; ordinary polls keep one deadline and the tighter backstop too.
 # Ownership exists to stop one pass starving the other in steady state, and a
 # one-shot catch-up at session start is not steady state. Startup is exactly the
 # moment outcomes have accumulated with nothing watching, so it is the wrong
@@ -74,16 +76,23 @@
 # The scan additionally visits its first due child with at least a one-second
 # state-read bound, because whole-second arithmetic can otherwise round a small
 # budget to zero mid-scan.
-# A process-group kill one second after the invocation's whole budget - one
-# budget for an ordinary poll, two for --startup - remains as a backstop for an
-# invocation wedged in an unbounded wait (for example a live-held wake-queue
-# lock), so the clean deadline path is not racing its own backstop. That kill
-# is SIGKILL, which skips every EXIT trap, so the scan lock is held by the
-# invoking process rather than by the bounded child it kills. An ordinary poll
-# that finds that lock held yields it, because a concurrent scan is already
-# doing this work; a --startup invocation instead waits for it under a bound,
-# because a one-shot catch-up that is silently dropped is indistinguishable
-# from a quiet poll.
+# A process-group kill one second after the invocation's whole budget remains as
+# a backstop for an invocation wedged in an unbounded wait (for example a
+# live-held wake-queue lock), so the clean deadline path is not racing its own
+# backstop. That budget is one deadline for every invocation that runs a single
+# pass, and two only where both passes will actually run - a --startup
+# invocation in a secondmate home - rather than wherever --startup was merely
+# passed. That kill is SIGKILL, which skips every EXIT trap, so the scan lock is
+# held by the invoking process rather than by the bounded child it kills.
+# An ordinary poll that finds that lock held yields it, because a concurrent
+# scan is already doing this work. A --startup invocation instead waits a couple
+# of seconds for it, because a one-shot catch-up that is silently dropped is
+# indistinguishable from a quiet poll. That wait exists to survive a brief
+# overlap with a poll that is just finishing, NOT to outlast a whole one: a
+# --startup invocation that collides with a long-running poll still yields and
+# is still lost, and the session's first inactive scan then waits a full
+# FM_INACTIVE_RECONCILE_SECS. The wait stays short because it sits outside the
+# backstop, in a session-start deadline shared with the network bootstrap.
 #
 # It considers only a direct ordinary crewmate whose newest meta, status, or
 # turn-ended mtime is older than that interval and whose last status is not
@@ -786,11 +795,13 @@ case "$mode" in
     if [ "$startup" = 1 ]; then
       # A startup catch-up that is dropped on contention cannot be told apart
       # from a quiet poll, and it is the one invocation that exists to collect
-      # what accumulated while nothing was watching. Wait for the holder under
-      # a bound instead of yielding: the bound is the longest an ordinary poll
-      # can hold this lock, its budget plus its own backstop second.
-      fm_lock_acquire_wait_bounded "$SCAN_LOCK" \
-        $((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1)) || exit 0
+      # what accumulated while nothing was watching. So wait briefly for the
+      # holder rather than yielding at once - long enough to ride out a poll
+      # that is just finishing, not long enough to outlast a whole one. This
+      # wait is outside the backstop below and inside a session-start deadline
+      # shared with the network bootstrap, so a collision with a long-running
+      # poll yields here instead of spending that deadline waiting.
+      fm_lock_acquire_wait_bounded "$SCAN_LOCK" 2 || exit 0
     else
       # A concurrent scan of this home already holds it and is already doing
       # this work, so yield the poll rather than waiting for it outside the
@@ -802,12 +813,14 @@ case "$mode" in
     # process-group kill is only the backstop for a scan wedged outside every
     # bounded section (an unbounded lock wait), so it fires one second after
     # the last deadline the invocation can hold instead of racing the clean
-    # bounded exit it exists to guard. --startup runs two budgeted passes, so
-    # its bound covers both; an ordinary poll runs one and keeps the tighter
-    # bound.
+    # bounded exit it exists to guard. Two budgets are only reachable where both
+    # passes will run, which is the same condition scan() applies: --startup in
+    # a home that has a parent channel to deliver to. Everything else runs one
+    # pass and keeps the tighter bound.
     scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1))
-    [ "$startup" != 1 ] \
-      || scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS * 2 + 1))
+    if [ "$startup" = 1 ] && home_secondmate_id >/dev/null 2>&1; then
+      scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS * 2 + 1))
+    fi
     if fm_run_timed "$scan_backstop" "$0" _scan-locked "$startup"; then
       :
     elif [ "$?" -ne 124 ]; then
@@ -839,7 +852,7 @@ case "$mode" in
     acknowledge_notice "$2"
     ;;
   -h|--help)
-    sed -n '2,86{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,95{s/^# \{0,1\}//;p;}' "$0"
     ;;
   *)
     printf 'usage: fm-inactive-reconcile.sh scan [--startup]\n' >&2
