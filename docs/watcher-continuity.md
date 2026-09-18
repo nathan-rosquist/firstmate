@@ -104,7 +104,7 @@ Only a cycle with no matching delivery record emits `watcher: FAILED - cycle end
 A fresh child's confirmation is bounded per startup phase (forked with no lock claimed yet, lock claimed, identity published, beacon published) rather than over the whole cold start, so a child that reaches each next step within one window has its budget re-armed and is left alone however slowly the whole start runs.
 The bound is still wall-clock, so a child that spends a whole window inside one phase is torn down and reported as a stall in that phase, even when it was otherwise progressing.
 `bin/fm-watch-arm.sh` owns the phases, the platform-scaled `FM_ARM_CONFIRM_TIMEOUT` default, and the phase recorded on a timed-out cycle.
-A timed-out cycle names that phase in both `state/.watch-cycle-exits.log` as `reason=confirmation-timeout:<phase>` and the arm's stdout, so a child that never creates `state/.watch.lock` at all is recorded against the `fork` phase.
+A timed-out cycle names that phase in `state/.watch-cycle-exits.log` as `reason=confirmation-timeout:<phase>` and prints no extra stdout line, so a child that never creates `state/.watch.lock` at all is recorded against the `fork` phase.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.

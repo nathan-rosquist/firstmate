@@ -937,8 +937,6 @@ SH
     [ "$status" -ne 0 ] || fail "arm exited zero for a child stalled inside one startup phase (leftover beacon $leftover)"
     grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
       || fail "stalled child did not produce the typed failure (leftover beacon $leftover): $(cat "$armout")"
-    grep -qF 'stalled in startup phase identity' "$armout" \
-      || fail "stalled child was not reported against the identity phase (leftover beacon $leftover): $(cat "$armout")"
     grep -q 'reason=confirmation-timeout:identity' "$state/.watch-cycle-exits.log" \
       || fail "stalled phase was not recorded as identity in the lifecycle ledger (leftover beacon $leftover): $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
     child=$(sed -n 's/.*watcher_pid=\([0-9][0-9]*\).*/\1/p' "$state/.watch-cycle-exits.log" | tail -1)

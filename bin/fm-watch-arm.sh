@@ -30,16 +30,10 @@
 # its budget re-armed and is left alone however slowly the whole start runs.
 # The bound is still wall-clock: a child that spends a whole window inside one
 # step is torn down and reported as a stall in that phase, even when it was
-# otherwise progressing. It prints exactly one unambiguous verdict line,
-# preceded on the confirmation-timeout path by one diagnostic line naming the
-# stalled phase:
+# otherwise progressing. It prints exactly one unambiguous verdict line:
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
-#   watcher: child pid=<N> stalled in startup phase <phase> for <T>s
-#                                                        - diagnostic only, never a verdict; emitted
-#                                                          immediately before the FAILED line below
-#                                                          when a startup phase ran out its budget
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
@@ -85,8 +79,9 @@ GRACE=${FM_GUARD_GRACE:-300}
 # lock claimed yet; lock, the lock names this child; identity, its identity is
 # published beside the lock; beacon, this child has touched the beacon - see the
 # confirmation loop below) before this arm gives up on it. A timed-out cycle
-# names the phase it stalled in, so all four appear in the ledger reason and on
-# stdout. The watcher's cold start is dominated
+# names the phase it stalled in, so all four appear in the ledger reason. The
+# same value separately bounds wait_for_healthy_successor, which spends it as
+# ONE whole window rather than per phase. The watcher's cold start is dominated
 # by process creation: roughly 200 forks and execs before its first beat. Git
 # Bash/MSYS pays ~70ms per process creation against well under 1ms on Linux
 # (Windows itself, MSYS fork emulation, and per-process endpoint inspection each
@@ -274,7 +269,9 @@ report_attached() {
   echo "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
 }
 
-# Give a successor the same bounded confirmation window used for a fresh child.
+# Give a successor a single CONFIRM_TIMEOUT window, not the per-phase budget a
+# fresh child gets: there are no startup phases to observe on an already
+# published successor, so nothing here re-arms the deadline.
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
 wait_for_healthy_successor() {
@@ -650,9 +647,7 @@ done
 
 trap - HUP TERM INT
 print_watch_output "$child_out"
-# Name the phase the child stalled in: the ledger keeps it as the reason suffix
-# and the line below reaches the operator through the auto-arm failure notice.
-echo "watcher: child pid=$child stalled in startup phase $confirm_phase for ${CONFIRM_TIMEOUT}s"
+# The ledger keeps the phase the child stalled in as the reason suffix.
 cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
