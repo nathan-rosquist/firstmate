@@ -49,12 +49,17 @@
 # that gives the ledger pass almost every invocation and gives the scan an
 # unshared budget on the invocations where it actually has work.
 # --startup is the exception, and runs BOTH passes on the one invocation: the
-# ledger delivery first, then the scan. Ownership exists to stop one pass
-# starving the other in steady state, and a one-shot catch-up at session start
-# is not steady state - it costs a single invocation's time and nothing
-# recurring. Startup is exactly the moment outcomes have accumulated with
-# nothing watching, so skipping ledger delivery there would withhold the
-# outcomes it exists to catch up on.
+# ledger delivery first, then the scan, and the scan takes a FRESH deadline
+# rather than whatever the ledger pass left it, so it always enters with a full
+# unshared budget for its authoritative state reads. A --startup invocation can
+# therefore spend up to two budgets, once per session, and its outer backstop is
+# widened to match; ordinary polls keep one deadline and the tighter backstop.
+# Ownership exists to stop one pass starving the other in steady state, and a
+# one-shot catch-up at session start is not steady state. Startup is exactly the
+# moment outcomes have accumulated with nothing watching, so it is the wrong
+# place to economize: skipping ledger delivery there, or handing the scan a
+# budget the ledger pass has already spent, would withhold the very outcomes it
+# exists to catch up on.
 # Each pass owns a durable cursor - .inactive-outcome-ledger for the ledger
 # pass, .inactive-outcome-reconcile for the scan - walks the children after it,
 # wraps through the earlier ones once that completes, and resumes after its
@@ -69,11 +74,16 @@
 # The scan additionally visits its first due child with at least a one-second
 # state-read bound, because whole-second arithmetic can otherwise round a small
 # budget to zero mid-scan.
-# A process-group kill one second after the budget remains as a backstop for an
+# A process-group kill one second after the invocation's whole budget - one
+# budget for an ordinary poll, two for --startup - remains as a backstop for an
 # invocation wedged in an unbounded wait (for example a live-held wake-queue
 # lock), so the clean deadline path is not racing its own backstop. That kill
 # is SIGKILL, which skips every EXIT trap, so the scan lock is held by the
-# invoking process rather than by the bounded child it kills.
+# invoking process rather than by the bounded child it kills. An ordinary poll
+# that finds that lock held yields it, because a concurrent scan is already
+# doing this work; a --startup invocation instead waits for it under a bound,
+# because a one-shot catch-up that is silently dropped is indistinguishable
+# from a quiet poll.
 #
 # It considers only a direct ordinary crewmate whose newest meta, status, or
 # turn-ended mtime is older than that interval and whose last status is not
@@ -520,7 +530,8 @@ ledger_pass() { # <cursor> <after|through> <deadline>
   local cursor=$1 range=$2 deadline=$3 meta id lock now visited=''
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     valid_id "$id" || continue
     case "$range" in
       after) [ -z "$cursor" ] || [[ "$id" > "$cursor" ]] || continue ;;
@@ -666,7 +677,7 @@ scan() {
   local ledger_cursor='' ledger_rc=0 scan_due=0 scan_primed=0 ledger_due=0
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
-  # One deadline for the whole invocation, owned by whichever pass is due, so
+  # One deadline for an ordinary poll, owned by whichever pass is due, so
   # neither pass spends the budget the other one needs.
   deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
   self=$(home_secondmate_id) || { marker_rc=$?; self=''; }
@@ -709,6 +720,13 @@ scan() {
     fi
   fi
   [ "$scan_due" = 1 ] || return 0
+  # --startup is the one invocation where both passes run, so the scan starts a
+  # budget of its own here rather than inheriting one the ledger pass may have
+  # spent. Handing scan_pass a spent deadline is what floors its guaranteed
+  # first visit to one second, below the cost of a single crew-state read, and
+  # that visit is charged after the cursor has already moved past the child.
+  [ "$startup" != 1 ] \
+    || deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
   cursor=$(scan_marker_cursor)
   valid_id "$cursor" || cursor=''
   write_scan_marker "$cursor" || return 1
@@ -765,16 +783,32 @@ case "$mode" in
     # reused pid the library's staleness path cannot reclaim it at all, because
     # the recorded holder still answers as alive. Holding it here puts the
     # release on the one process the backstop never kills.
-    # A concurrent scan of this home already holds it and is already doing this
-    # work, so yield the poll rather than waiting for it outside the very
-    # budget this invocation exists to respect.
-    fm_lock_try_acquire "$SCAN_LOCK" || exit 0
+    if [ "$startup" = 1 ]; then
+      # A startup catch-up that is dropped on contention cannot be told apart
+      # from a quiet poll, and it is the one invocation that exists to collect
+      # what accumulated while nothing was watching. Wait for the holder under
+      # a bound instead of yielding: the bound is the longest an ordinary poll
+      # can hold this lock, its budget plus its own backstop second.
+      fm_lock_acquire_wait_bounded "$SCAN_LOCK" \
+        $((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1)) || exit 0
+    else
+      # A concurrent scan of this home already holds it and is already doing
+      # this work, so yield the poll rather than waiting for it outside the
+      # very budget this invocation exists to respect.
+      fm_lock_try_acquire "$SCAN_LOCK" || exit 0
+    fi
     trap 'fm_lock_release "$SCAN_LOCK"' EXIT
-    # The scan's own whole-second deadline enforces the budget; this outer
+    # The scan's own whole-second deadlines enforce the budget; this outer
     # process-group kill is only the backstop for a scan wedged outside every
     # bounded section (an unbounded lock wait), so it fires one second after
-    # the deadline instead of racing the clean bounded exit it exists to guard.
-    if fm_run_timed $((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1)) "$0" _scan-locked "$startup"; then
+    # the last deadline the invocation can hold instead of racing the clean
+    # bounded exit it exists to guard. --startup runs two budgeted passes, so
+    # its bound covers both; an ordinary poll runs one and keeps the tighter
+    # bound.
+    scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1))
+    [ "$startup" != 1 ] \
+      || scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS * 2 + 1))
+    if fm_run_timed "$scan_backstop" "$0" _scan-locked "$startup"; then
       :
     elif [ "$?" -ne 124 ]; then
       exit 1
@@ -805,7 +839,7 @@ case "$mode" in
     acknowledge_notice "$2"
     ;;
   -h|--help)
-    sed -n '2,76{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,86{s/^# \{0,1\}//;p;}' "$0"
     ;;
   *)
     printf 'usage: fm-inactive-reconcile.sh scan [--startup]\n' >&2
