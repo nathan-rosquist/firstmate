@@ -23,8 +23,14 @@
 # This script forks the watcher as a tracked child, then VERIFIES the outcome
 # before it settles in. It confirms a watcher process is genuinely alive AND the
 # liveness beacon (state/.last-watcher-beat) is fresh within FM_GUARD_GRACE (the
-# single source of truth, shared with fm-watch.sh and fm-guard.sh), and prints
-# exactly one unambiguous status line:
+# single source of truth, shared with fm-watch.sh and fm-guard.sh). That
+# confirmation is bounded per startup PHASE by FM_ARM_CONFIRM_TIMEOUT (the
+# confirmation loop below owns the phases) rather than over the whole cold
+# start, so a child that reaches each next startup step within one window has
+# its budget re-armed and is left alone however slowly the whole start runs.
+# The bound is still wall-clock: a child that spends a whole window inside one
+# step is torn down and reported as a stall in that phase, even when it was
+# otherwise progressing. It prints exactly one unambiguous verdict line:
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
@@ -69,9 +75,18 @@ WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
-# How long to wait for a freshly forked watcher to acquire the lock and beat.
-# Git Bash/MSYS pays a much higher fork cost while the watcher completes its
-# required pre-lock migration, so its bounded default covers that cold start.
+# How long a freshly forked watcher may spend inside ONE startup phase (fork, no
+# lock claimed yet; lock, the lock names this child; identity, its identity is
+# published beside the lock; beacon, this child has touched the beacon - see the
+# confirmation loop below) before this arm gives up on it. A timed-out cycle
+# names the phase it stalled in, so all four appear in the ledger reason. The
+# same value separately bounds wait_for_healthy_successor, which spends it as
+# ONE whole window rather than per phase. The watcher's cold start is dominated
+# by process creation: roughly 200 forks and execs before its first beat. Git
+# Bash/MSYS pays ~70ms per process creation against well under 1ms on Linux
+# (Windows itself, MSYS fork emulation, and per-process endpoint inspection each
+# take a share), measured on 2026-09-17 as 5-8s to the lock and 12-18s to the
+# first beat on an idle host, so its per-phase default is scaled up.
 case "${OSTYPE:-}" in
   msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
   *) ARM_CONFIRM_DEFAULT=10 ;;
@@ -254,7 +269,9 @@ report_attached() {
   echo "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
 }
 
-# Give a successor the same bounded confirmation window used for a fresh child.
+# Give a successor a single CONFIRM_TIMEOUT window, not the per-phase budget a
+# fresh child gets: there are no startup phases to observe on an already
+# published successor, so nothing here re-arms the deadline.
 # Adapter-owned continuations normally win immediately, but the bound avoids a
 # false failure when process-close delivery and lock publication cross briefly.
 wait_for_healthy_successor() {
@@ -543,36 +560,94 @@ owned_child_finished() {
 # Verify the outcome: poll until this child is the confirmed healthy watcher, or
 # until some other watcher legitimately holds the singleton (a startup race), or
 # until the child gives up. Only then print the honest line.
-# date(1) exposes whole seconds. Keep the configured confirmation budget from
-# collapsing when startup begins just before the next second boundary.
-deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+#
+# The bound is per startup PHASE, not per cold start. A fresh watcher publishes
+# its liveness in three observable steps - the lock names the child, the child's
+# identity is recorded beside it, the beacon is touched - and each newly
+# observed step re-arms CONFIRM_TIMEOUT. A child that keeps reaching the next
+# step is starting, however slowly the platform runs it; only a child that
+# stalls for a whole window inside one step is torn down. One window over the
+# whole start left an idle Git Bash/MSYS host about 10s of headroom (20s of a
+# 31s window, measured 2026-09-17), which ordinary contention consumed, and the
+# arm then killed a healthy child on its way to its first beat.
+#
+# The OpenCode, Pi and omp adapters' Windows ready budgets do not yet cover this
+# per-phase total, so they can still retire an arm whose child is progressing;
+# closing that is follow-up task fm-adapter-arm-timeout-w1, and those budgets
+# must be DERIVED from (FM_ARM_CONFIRM_TIMEOUT + 1) x phase-count, not hardcoded.
+#
+# The beacon step asks whether the beacon is newer than this arm's own child
+# output file, created immediately before the fork: a home that was supervised
+# before still holds a beacon from the previous cycle, and mere existence would
+# report the beacon step reached before this child ever published one.
+#
+# The step reads use shell builtins only: every fork this loop spends competes
+# with the child for the same serialized process-creation path, and the earlier
+# ten-fork iteration measurably slowed the child's own startup on MSYS. The full
+# fm_watcher_healthy proof, which forks, is therefore gated on the cheap reads,
+# and the gate is LOSSLESS - every state it skips is one the proof provably
+# fails. It runs only when the lock names a live pid and either that pid is
+# foreign (attach must be judged) or it is this child with pid-identity
+# published and a beacon file present. An empty or dead lock pid fails
+# fm_pid_alive; this child without a published identity fails the identity check
+# in fm_watcher_lock_matches_pid; a missing beacon makes fm_path_age report
+# 999999 so the age check fails. So the proof is skipped through the fork and
+# lock steps always, and through the identity step too in a fresh home that
+# holds no beacon file at all. A home whose beacon exists but has aged past
+# GRACE still re-pays the proof on every identity-step poll until this child's
+# first beat, because beacon age cannot be read without a fork; that cost now
+# lands inside a window sized for that one step rather than inside a single
+# budget for the whole cold start.
+# $SECONDS is bash's forkless whole-second clock; the extra rounding second
+# keeps a one-second budget from collapsing at a boundary, exactly as the
+# date(1)-based deadline did before.
+confirm_phase=fork
+confirm_deadline=$((SECONDS + CONFIRM_TIMEOUT + 1))
 while :; do
-  if healthy_watcher; then
-    if [ "$HEALTHY_PID" = "$child" ]; then
-      cycle_refresh_lock_before
-      if ! handling_generation=$(handling_successor_generation); then
-        cleanup_child
-        wait "$child" 2>/dev/null || true
-        cycle_log_append 1 none handling-handoff-failed none
-        echo "watcher: FAILED - established successor could not inspect handling state"
-        exit 1
+  lock_pid=
+  { IFS= read -r lock_pid < "$WATCH_LOCK/pid"; } 2>/dev/null || :
+  phase=fork
+  if [ "$lock_pid" = "$child" ]; then
+    phase=lock
+    if [ -s "$WATCH_LOCK/pid-identity" ]; then
+      phase=identity
+      [ "$BEAT" -nt "$child_out" ] && phase=beacon
+    fi
+  fi
+  if [ "$phase" != fork ] && [ "$phase" != "$confirm_phase" ]; then
+    confirm_phase=$phase
+    confirm_deadline=$((SECONDS + CONFIRM_TIMEOUT + 1))
+  fi
+  if [ -n "$lock_pid" ] && fm_pid_alive "$lock_pid" &&
+    { [ "$lock_pid" != "$child" ] ||
+      { [ -s "$WATCH_LOCK/pid-identity" ] && [ -e "$BEAT" ]; }; }; then
+    if healthy_watcher; then
+      if [ "$HEALTHY_PID" = "$child" ]; then
+        cycle_refresh_lock_before
+        if ! handling_generation=$(handling_successor_generation); then
+          cleanup_child
+          wait "$child" 2>/dev/null || true
+          cycle_log_append 1 none handling-handoff-failed none
+          echo "watcher: FAILED - established successor could not inspect handling state"
+          exit 1
+        fi
+        cycle_mark_predecessor_successor "started:$child"
+        if [ -n "$handling_generation" ]; then
+          echo "watcher: started pid=$child (beacon fresh) recovery-generation=$handling_generation"
+        else
+          echo "watcher: started pid=$child (beacon fresh)"
+        fi
+        wait "$child"
+        rc=$?
+        owned_child_finished "$rc"
+        exit $?
       fi
-      cycle_mark_predecessor_successor "started:$child"
-      if [ -n "$handling_generation" ]; then
-        echo "watcher: started pid=$child (beacon fresh) recovery-generation=$handling_generation"
-      else
-        echo "watcher: started pid=$child (beacon fresh)"
-      fi
+      # Another watcher won the singleton; our child stood down.
       wait "$child"
       rc=$?
       owned_child_finished "$rc"
       exit $?
     fi
-    # Another watcher won the singleton; our child stood down.
-    wait "$child"
-    rc=$?
-    owned_child_finished "$rc"
-    exit $?
   fi
   if [ "$child_done" -eq 0 ] && ! fm_pid_alive "$child"; then
     wait "$child"
@@ -581,15 +656,16 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  [ "$SECONDS" -ge "$confirm_deadline" ] && break
   sleep 0.2
 done
 
 trap - HUP TERM INT
 print_watch_output "$child_out"
+# The ledger keeps the phase the child stalled in as the reason suffix.
 cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
-cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
+cycle_log_append "$rc" "$(cycle_signal_name "$rc")" "confirmation-timeout:$confirm_phase" none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

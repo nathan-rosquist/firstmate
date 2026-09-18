@@ -501,6 +501,26 @@ ok - unacknowledged recovery is announced at most once per generation and the su
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=59357
 ```
 
+### Git Bash/MSYS arm confirmation cost, 2026-09-17
+
+Measured on Windows 11 Pro 10.0.26200 under Git Bash (MINGW64_NT-10.0-26200 3.6.9, bash 5.3.15), against an isolated `FM_HOME` with no crew, `FM_POLL=5`, and heartbeat and check cadences disabled, on an otherwise idle host.
+
+```sh
+FM_HOME=<scratch-home> FM_POLL=5 FM_HEARTBEAT=999999 FM_CHECK_INTERVAL=999999 bin/fm-watch.sh
+FM_HOME=<scratch-home> FM_POLL=5 FM_HEARTBEAT=999999 FM_CHECK_INTERVAL=999999 bin/fm-watch-arm.sh
+```
+
+Observed, with the lock and beacon appearance read off `state/.watch.lock/pid` and `state/.last-watcher-beat` mtimes relative to the launch:
+
+```text
+bare watcher:   lock pid at +5.2s to +5.8s, first beacon at +11.6s to +13.6s, 106 subshell forks before the first beacon
+arm-launched:   lock pid at +8.1s, first beacon at +17.7s, "watcher: started" at +19.9s
+```
+
+Observed guarantee: an arm-launched child forked from a bash whose parent is a native Windows process (MSYS reports its ppid as 1) held the singleton lock and advanced the beacon every poll for the whole observation window, so the child neither exits early nor is orphaned at the MSYS/native boundary; before the per-phase bound the same start left about 10s of headroom inside the 31s window, and the arm's own ten-fork poll iteration accounted for the difference between the bare and arm-launched first beat.
+The arm-launched row above predates this change: the confirmation loop now reads each startup step with shell builtins and forks the health proof only when the lock names a live pid it must judge, so the arm's own contribution to its child's first beat is smaller than measured here.
+`tests/fm-watcher-lock.test.sh` pins the per-phase bound with a stand-in watcher whose phase durations each fit the window while their sum does not, and its healthy-peer restart case uses a TERM-ignoring shell peer because Cygwin's `kill` cannot signal a native process and terminates it instead.
+
 Deterministic entry points:
 
 ```sh

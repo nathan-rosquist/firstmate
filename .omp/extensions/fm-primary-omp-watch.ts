@@ -131,9 +131,17 @@ const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(exte
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const retryLimit = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
-// 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
-// bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
-// SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
+// 35s on Windows does NOT bound the arm's confirmation: bin/fm-watch-arm.sh
+// re-arms FM_ARM_CONFIRM_TIMEOUT at each newly observed startup phase, so this
+// adapter can still retire an arm whose child is progressing normally. The value
+// is inherited from the obsolete single-window derivation (it once sat above the
+// arm's one 30s MSYS window) and is not a considered bound; closing the gap is
+// tracked as separate follow-up work. The correct derivation is that the ready
+// budget must exceed the arm's worst-case confirmation total, which is
+// (FM_ARM_CONFIRM_TIMEOUT + 1 rounding second) x the number of re-armable startup
+// phases (fork, lock, identity, beacon) - about 124s at the 30s Git Bash/MSYS
+// default - rather than a single window. Conditioned on win32 so other platforms
+// keep 12s.
 const armReadyTimeoutMs = positiveInteger(
   "FM_OMP_ARM_READY_TIMEOUT_MS",
   process.platform === "win32" ? 35000 : 12000,

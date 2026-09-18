@@ -16,7 +16,8 @@ LIB="$ROOT/bin/fm-wake-lib.sh"
 # An arm only reports its typed failure after wait_for_healthy_successor has
 # spent the whole confirmation budget, so cases that wait for that failure must
 # outlast the largest production default (30s on MSYS, 10s elsewhere - see
-# ARM_CONFIRM_DEFAULT in bin/fm-watch-arm.sh). This is a ceiling spent only when
+# ARM_CONFIRM_DEFAULT in bin/fm-watch-arm.sh; a fresh child's confirmation
+# applies that budget per startup phase). This is a ceiling spent only when
 # an arm genuinely fails to exit; a passing case returns as soon as it does.
 ARM_FAIL_EXIT_POLLS=400
 
@@ -462,7 +463,13 @@ test_watch_restart_attaches_to_healthy_peer() {
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
   peer_ready="$dir/peer.ready"
-  node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], "ready\n"); setTimeout(() => {}, 300000)' "$peer_ready" &
+  # The TERM-resistant peer must be a process the test shell can actually
+  # signal. Under Git Bash/MSYS a native process (a node peer with a SIGTERM
+  # handler) cannot receive a Cygwin signal at all: `kill -TERM` terminates it
+  # outright, --restart's stop then succeeds, and this case failed for a reason
+  # unrelated to its predicate. A shell peer that ignores TERM resists it on
+  # every platform.
+  bash -c 'trap "" TERM; printf "ready\n" > "$1"; while :; do sleep 1; done' _ "$peer_ready" &
   peer=$!
   i=0
   while [ "$i" -lt 50 ] && [ ! -s "$peer_ready" ]; do
@@ -483,8 +490,11 @@ test_watch_restart_attaches_to_healthy_peer() {
   touch "$state/.last-watcher-beat"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
+  # The attach line follows --restart's bounded stop wait on the resistant peer
+  # plus the owned child's real startup and stand-down, which Git Bash/MSYS runs
+  # in the tens of seconds; the loop breaks the moment the line appears.
   i=0
-  while [ "$i" -lt 80 ]; do
+  while [ "$i" -lt 400 ]; do
     grep -qF "watcher: attached pid=$peer" "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -842,6 +852,118 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
+# A fresh watcher publishes its liveness in phases (lock, identity, beacon), and
+# on Git Bash/MSYS each phase costs seconds of process creation. The arm bounds
+# each phase with FM_ARM_CONFIRM_TIMEOUT rather than the whole cold start, so a
+# slow-but-progressing child is confirmed while a child that stalls inside one
+# phase is still torn down. The arm resolves its watcher from its own directory,
+# so the only way to drive its confirmation loop with deterministic phase
+# durations is a fixture bin holding a copy of the real arm and its library
+# beside a stand-in watcher whose phase timing the test controls.
+#
+# The delay only sets the controlled part of a phase: the rest is the platform's
+# own process-creation cost inside it. Two constraints fix the constants, and
+# both must hold:
+#   2*delay > timeout+1          - two phases the child passes must together
+#                                  outlast one window, so a bound over the whole
+#                                  cold start would still fail this child and
+#                                  the case discriminates the fix from its
+#                                  predecessor
+#   (timeout+1) - delay > cost   - the headroom left inside one window must
+#                                  cover the worst per-phase platform cost
+# Idle Git Bash/MSYS measures that cost at ~3s to reach the lock and ~1s per
+# later phase, but this suite documents (see the immediate-wake case above) the
+# same class of process-creation-dominated work inflating 1.9-2.3s idle to
+# 9.1-13.1s at 3x CPU oversubscription, a 4-6x factor that puts the 3s lock step
+# at 12-18s. timeout=24 with delay=13 satisfies both constraints (26 > 25, and
+# 12s of headroom) and is the most headroom the first constraint allows, since
+# it caps headroom at (timeout+1)/2. These are derived from that measured worst
+# case, not raised until the suite passed.
+# The stalled child's delay only has to outlast the window, and is
+# kept just past it: bash defers a trap until the running foreground command
+# returns, so the child cannot act on the arm's teardown TERM until its sleep
+# ends, and the arm blocks in wait(1) meanwhile. Any margin beyond the deadline
+# is therefore dead wall time in this case rather than the bound it measures.
+test_arm_confirmation_is_bounded_per_startup_phase() {
+  local dir state fixbin armout armpid child i status leftover timeout=24 delay=13
+  dir=$(make_case arm-phase-confirm)
+  state="$dir/state"
+  fixbin="$dir/fixbin"
+  mkdir -p "$fixbin"
+  cp "$WATCH_ARM" "$LIB" "$fixbin/"
+  cat > "$fixbin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+LOCK="$STATE/.watch.lock"
+fm_lock_try_acquire "$LOCK" || { echo "watcher: already running"; exit 0; }
+trap 'fm_lock_release "$LOCK"; exit 1' HUP INT TERM
+printf '%s\n' "$FM_HOME" > "$LOCK/fm-home"
+printf '%s\n' "$SCRIPT_DIR/fm-watch.sh" > "$LOCK/watcher-path"
+sleep "${FM_FAKE_WATCH_IDENTITY_DELAY:-0}"
+fm_pid_identity "${BASHPID:-$$}" > "$LOCK/pid-identity"
+sleep "${FM_FAKE_WATCH_BEACON_DELAY:-0}"
+touch "$STATE/.last-watcher-beat"
+while :; do sleep 1; done
+SH
+  chmod +x "$fixbin/fm-watch.sh" "$fixbin/fm-watch-arm.sh"
+
+  # Two phases that each fit the window while their sum does not: a bound over
+  # the whole start fails this child, a per-phase bound confirms it.
+  armout="$dir/arm-progressing.out"
+  FM_HOME="$dir" FM_ARM_CONFIRM_TIMEOUT="$timeout" \
+    FM_FAKE_WATCH_IDENTITY_DELAY="$delay" FM_FAKE_WATCH_BEACON_DELAY="$delay" \
+    "$fixbin/fm-watch-arm.sh" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 400 ]; do
+    grep -qE '^watcher: (started|FAILED)' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  child=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$child (beacon fresh)" "$armout" \
+    || fail "arm did not confirm a child that reached every startup phase inside the window: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a progressing child"
+  is_live_non_zombie "$child" || fail "arm tore down a progressing child"
+  kill "$armpid" "$child" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+
+  # Same fixture with one phase longer than the window: the stall is still
+  # caught, the child is torn down, and the ledger names the phase it stalled in.
+  # Every home that was supervised before still holds a beacon from an earlier
+  # cycle, so the stall runs both in a clean home and behind a leftover stale
+  # beacon: the phase named must follow this child's own progress, so it stays
+  # identity rather than collapsing to beacon on the inherited file.
+  for leftover in absent stale; do
+    rm -rf "$state"
+    mkdir -p "$state"
+    [ "$leftover" = absent ] || touch -t 200001010000 "$state/.last-watcher-beat"
+    armout="$dir/arm-stalled-$leftover.out"
+    FM_HOME="$dir" FM_ARM_CONFIRM_TIMEOUT="$timeout" FM_FAKE_WATCH_BEACON_DELAY=$((timeout + 3)) \
+      "$fixbin/fm-watch-arm.sh" > "$armout" &
+    armpid=$!
+    wait_for_exit "$armpid" 400
+    status=$?
+    [ "$status" -ne 124 ] || fail "arm never gave up on a child stalled inside one startup phase (leftover beacon $leftover)"
+    [ "$status" -ne 0 ] || fail "arm exited zero for a child stalled inside one startup phase (leftover beacon $leftover)"
+    grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+      || fail "stalled child did not produce the typed failure (leftover beacon $leftover): $(cat "$armout")"
+    grep -q 'reason=confirmation-timeout:identity' "$state/.watch-cycle-exits.log" \
+      || fail "stalled phase was not recorded as identity in the lifecycle ledger (leftover beacon $leftover): $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
+    child=$(sed -n 's/.*watcher_pid=\([0-9][0-9]*\).*/\1/p' "$state/.watch-cycle-exits.log" | tail -1)
+    [ -n "$child" ] || fail "ledger record did not name the stalled child (leftover beacon $leftover)"
+    i=0
+    while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    ! is_live_non_zombie "$child" || fail "arm left a stalled child running after giving up on it (leftover beacon $leftover)"
+  done
+  pass "arm confirmation is bounded per startup phase and still catches a stalled phase"
+}
+
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
   dir=$(make_case cycle-ledger)
@@ -1135,5 +1257,6 @@ test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
+test_arm_confirmation_is_bounded_per_startup_phase
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
