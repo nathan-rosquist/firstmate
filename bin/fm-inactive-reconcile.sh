@@ -59,9 +59,9 @@
 # checks the deadline before it records a child as visited, so stopping on the
 # deadline never advances a cursor past a child it did not examine. The scan
 # records every child it visits, because each visit costs an authoritative
-# state read; the ledger pass records only a child that owed a delivery and a
-# child it enters inside the backstop's reach, because its visits are cheap
-# and the rewrite is not.
+# state read; the ledger pass records only a child that owed a delivery, a
+# child it enters inside the backstop's reach, and the last child it visited
+# before a deadline stop, because its visits are cheap and the rewrite is not.
 # The scan additionally visits its first due child with at least a one-second
 # state-read bound, because whole-second arithmetic can otherwise round a small
 # budget to zero mid-scan.
@@ -502,15 +502,22 @@ report_child_ledger_locked() { # <id> <meta>
 # the marker for every child on every poll - four subprocesses and two
 # filesystem operations each - to insure against an event confined to the end of
 # the budget would spend the very budget the cursor exists to protect, so the
-# write is narrowed to the two occasions that pay for themselves: a child
-# entered inside the backstop's reach, and a child that owed a delivery, whose
-# work must not be paid for a second time. An unexpectedly early kill anywhere
-# else costs a re-walk from the last recorded position, which is a repeated
-# visit rather than a skipped child, and that trade is deliberate. The deadline
-# check ahead of the in-reach write is what keeps a pass that stops cleanly from
-# retiring a child it never looked at.
+# write is narrowed to the occasions that pay for themselves: a child entered
+# inside the backstop's reach, a child that owed a delivery, whose work must not
+# be paid for a second time, and - once per invocation rather than once per
+# child - the last child visited before the deadline stops the pass. That last
+# write is what makes the pass resumable at all, because neither of the other
+# two is guaranteed to fire in a given poll: a child that spans the whole final
+# second means none is entered inside the backstop's reach, and a poll in which
+# no child owes anything either would otherwise leave the cursor exactly where
+# it began, re-walk the same prefix on every later poll, and never reach the
+# children past the stop point. An unexpectedly early kill anywhere else costs a
+# re-walk from the last recorded position, which is a repeated visit rather than
+# a skipped child, and that trade is deliberate. The deadline check ahead of
+# both writes is what keeps a pass that stops cleanly from retiring a child it
+# never looked at.
 ledger_pass() { # <cursor> <after|through> <deadline>
-  local cursor=$1 range=$2 deadline=$3 meta id lock now
+  local cursor=$1 range=$2 deadline=$3 meta id lock now visited=''
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
@@ -521,10 +528,14 @@ ledger_pass() { # <cursor> <after|through> <deadline>
     esac
     [ "$(meta_field "$meta" kind)" != secondmate ] || continue
     now=$(date +%s)
-    [ "$now" -lt "$deadline" ] || return 3
+    if [ "$now" -ge "$deadline" ]; then
+      [ -z "$visited" ] || write_marker "$LEDGER_MARKER" "$visited" || return 1
+      return 3
+    fi
     if [ $((now + 1)) -ge "$deadline" ]; then
       write_marker "$LEDGER_MARKER" "$id" || return 1
     fi
+    visited=$id
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
@@ -796,7 +807,7 @@ case "$mode" in
     acknowledge_notice "$2"
     ;;
   -h|--help)
-    sed -n '2,54{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,72{s/^# \{0,1\}//;p;}' "$0"
     ;;
   *)
     printf 'usage: fm-inactive-reconcile.sh scan [--startup]\n' >&2
