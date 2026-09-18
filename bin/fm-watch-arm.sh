@@ -562,11 +562,18 @@ owned_child_finished() {
 # 31s window, measured 2026-09-17), which ordinary contention consumed, and the
 # arm then killed a healthy child on its way to its first beat.
 #
+# The beacon step asks whether the beacon is newer than this arm's own child
+# output file, created immediately before the fork: a home that was supervised
+# before still holds a beacon from the previous cycle, and mere existence would
+# report the beacon step reached before this child ever published one.
+#
 # The step reads use shell builtins only: every fork this loop spends competes
 # with the child for the same serialized process-creation path, and the earlier
 # ten-fork iteration measurably slowed the child's own startup on MSYS. The full
-# fm_watcher_healthy proof, which forks, runs only once the cheap reads say it
-# can pass, or when a foreign holder appears and attach must be judged.
+# fm_watcher_healthy proof, which forks, runs on the single poll that first
+# observes the identity step (an inherited beacon still inside GRACE confirms
+# this child there, as it always has), on every poll once this child's own
+# beacon appears, and when a foreign holder appears and attach must be judged.
 # $SECONDS is bash's forkless whole-second clock; the extra rounding second
 # keeps a one-second budget from collapsing at a boundary, exactly as the
 # date(1)-based deadline did before.
@@ -580,14 +587,16 @@ while :; do
     phase=lock
     if [ -s "$WATCH_LOCK/pid-identity" ]; then
       phase=identity
-      [ -e "$BEAT" ] && phase=beacon
+      [ "$BEAT" -nt "$child_out" ] && phase=beacon
     fi
   fi
+  entered_identity=0
   if [ "$phase" != fork ] && [ "$phase" != "$confirm_phase" ]; then
+    [ "$phase" = identity ] && entered_identity=1
     confirm_phase=$phase
     confirm_deadline=$((SECONDS + CONFIRM_TIMEOUT + 1))
   fi
-  if [ "$phase" = beacon ] || { [ -n "$lock_pid" ] && [ "$lock_pid" != "$child" ]; }; then
+  if [ "$phase" = beacon ] || [ "$entered_identity" -eq 1 ] || { [ -n "$lock_pid" ] && [ "$lock_pid" != "$child" ]; }; then
     if healthy_watcher; then
       if [ "$HEALTHY_PID" = "$child" ]; then
         cycle_refresh_lock_before

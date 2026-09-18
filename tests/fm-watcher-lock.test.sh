@@ -860,8 +860,16 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
 # so the only way to drive its confirmation loop with deterministic phase
 # durations is a fixture bin holding a copy of the real arm and its library
 # beside a stand-in watcher whose phase timing the test controls.
+#
+# The delay only sets the controlled part of a phase: the rest is the platform's
+# own process-creation cost inside it (measured on Git Bash/MSYS at ~3s to reach
+# the lock and ~1s per later phase). The window therefore has to clear one delay
+# plus that cost, while two delays alone still have to exceed one window so a
+# bound over the whole start would fail this child even where the cost is
+# negligible. The stalled child's delay only has to outlast the window; the arm
+# tears it down at the bound, so a wide margin there costs no wall time.
 test_arm_confirmation_is_bounded_per_startup_phase() {
-  local dir state fixbin armout armpid child i status timeout=5 delay=3.8
+  local dir state fixbin armout armpid child i status leftover timeout=16 delay=11
   dir=$(make_case arm-phase-confirm)
   state="$dir/state"
   fixbin="$dir/fixbin"
@@ -908,28 +916,37 @@ SH
 
   # Same fixture with one phase longer than the window: the stall is still
   # caught, the child is torn down, and the ledger names the phase it stalled in.
-  rm -rf "$state"
-  mkdir -p "$state"
-  armout="$dir/arm-stalled.out"
-  FM_HOME="$dir" FM_ARM_CONFIRM_TIMEOUT="$timeout" FM_FAKE_WATCH_BEACON_DELAY=$((timeout + 3)) \
-    "$fixbin/fm-watch-arm.sh" > "$armout" &
-  armpid=$!
-  wait_for_exit "$armpid" 400
-  status=$?
-  [ "$status" -ne 124 ] || fail "arm never gave up on a child stalled inside one startup phase"
-  [ "$status" -ne 0 ] || fail "arm exited zero for a child stalled inside one startup phase"
-  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
-    || fail "stalled child did not produce the typed failure: $(cat "$armout")"
-  grep -q 'reason=confirmation-timeout:identity' "$state/.watch-cycle-exits.log" \
-    || fail "stalled phase was not recorded in the lifecycle ledger: $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
-  child=$(sed -n 's/.*watcher_pid=\([0-9][0-9]*\).*/\1/p' "$state/.watch-cycle-exits.log" | tail -1)
-  [ -n "$child" ] || fail "ledger record did not name the stalled child"
-  i=0
-  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
-    sleep 0.1
-    i=$((i + 1))
+  # Every home that was supervised before still holds a beacon from an earlier
+  # cycle, so the stall runs both in a clean home and behind a leftover stale
+  # beacon: the phase named must follow this child's own progress, so it stays
+  # identity rather than collapsing to beacon on the inherited file.
+  for leftover in absent stale; do
+    rm -rf "$state"
+    mkdir -p "$state"
+    [ "$leftover" = absent ] || touch -t 200001010000 "$state/.last-watcher-beat"
+    armout="$dir/arm-stalled-$leftover.out"
+    FM_HOME="$dir" FM_ARM_CONFIRM_TIMEOUT="$timeout" FM_FAKE_WATCH_BEACON_DELAY=$((timeout * 2)) \
+      "$fixbin/fm-watch-arm.sh" > "$armout" &
+    armpid=$!
+    wait_for_exit "$armpid" 400
+    status=$?
+    [ "$status" -ne 124 ] || fail "arm never gave up on a child stalled inside one startup phase (leftover beacon $leftover)"
+    [ "$status" -ne 0 ] || fail "arm exited zero for a child stalled inside one startup phase (leftover beacon $leftover)"
+    grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+      || fail "stalled child did not produce the typed failure (leftover beacon $leftover): $(cat "$armout")"
+    grep -qF 'stalled in startup phase identity' "$armout" \
+      || fail "stalled child was not reported against the identity phase (leftover beacon $leftover): $(cat "$armout")"
+    grep -q 'reason=confirmation-timeout:identity' "$state/.watch-cycle-exits.log" \
+      || fail "stalled phase was not recorded as identity in the lifecycle ledger (leftover beacon $leftover): $(cat "$state/.watch-cycle-exits.log" 2>/dev/null)"
+    child=$(sed -n 's/.*watcher_pid=\([0-9][0-9]*\).*/\1/p' "$state/.watch-cycle-exits.log" | tail -1)
+    [ -n "$child" ] || fail "ledger record did not name the stalled child (leftover beacon $leftover)"
+    i=0
+    while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    ! is_live_non_zombie "$child" || fail "arm left a stalled child running after giving up on it (leftover beacon $leftover)"
   done
-  ! is_live_non_zombie "$child" || fail "arm left a stalled child running after giving up on it"
   pass "arm confirmation is bounded per startup phase and still catches a stalled phase"
 }
 
