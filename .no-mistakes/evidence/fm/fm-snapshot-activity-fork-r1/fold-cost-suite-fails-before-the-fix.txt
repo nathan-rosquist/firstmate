@@ -1,0 +1,3 @@
+# tests/fm-classify-activity-fold-cost.test.sh run against the PRE-FIX bin/fm-classify-lib.sh (base f1fc96e)
+not ok - wide fold: the fold charged 11354cs of child CPU over 1024 lines, against a budget of one subshell per line (160cs per 64 forks) with a 8x margin - it is forking per status line again
+exit=1

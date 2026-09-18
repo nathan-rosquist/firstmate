@@ -1,0 +1,27 @@
+=== drop-rewrite adversarial corpus: prefix keys, emptying and refilling the open set ===
+     1	working [key=phase1]: one
+     2	working [key=phase10]: ten
+     3	working [key=phase100]: hundred
+     4	done [key=phase1]: one closed - phase10 and phase100 must survive
+     5	working [key=a]: a
+     6	working [key=ab]: ab
+     7	done [key=a]: a closed
+     8	working [key=only]: sole record
+     9	done [key=only]: set is now empty
+    10	working [key=refill]: refilled after empty
+    11	working [key=empty-note]:
+    12	working [key=tabless-note]: note with  doubled  spaces
+
+BYTE-IDENTICAL base vs fixed (named-file and streaming forms)
+
+records the fixed fold publishes (TAB shown as ->):
+phase10 -> working -> ten
+phase100 -> working -> hundred
+ab -> working -> ab
+refill -> working -> refilled after empty
+empty-note -> working -> 
+tabless-note -> working -> note with  doubled  spaces
+
+phase1 closed without taking its prefix-sharing siblings:
+  prefix-sibling records still open: 2
+  phase1 correctly closed

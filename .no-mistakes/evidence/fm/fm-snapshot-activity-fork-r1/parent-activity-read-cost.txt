@@ -1,0 +1,18 @@
+# Cost of the parent-activity read, timed exactly as bin/fm-fleet-snapshot.sh
+# runs it (the bounded_parent_activities_json child), pre-fix vs post-fix.
+# Host: Windows 11 / Cygwin bash 5.3. Shipped budget is 2000 ms.
+
+lib     lines  rc      cost_ms   records_in_window
+base    20     0       7192      9
+base    120    0       32290     9
+base    256    0       69890     9
+fixed   20     0       3193      9
+fixed   120    0       2894      9
+fixed   256    0       3120      9
+
+# Where the post-fix 3.0 s still goes on this host (none of it the fold):
+  one bash -c startup                        : 912 ms
+  bash -c + source bin/fm-classify-lib.sh    : 372 ms
+  the same, plus the whole 256-line fold     : 614 ms
+  the three jq startups the child also pays  : 1710 ms
+  (plus stat, two tails and two awks)

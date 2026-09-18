@@ -1,0 +1,23 @@
+# bin/fm-test-run.sh --list --changed --base <target> with bin/fm-classify-lib.sh modified
+tests/fm-cursor-primary.test.sh
+tests/fm-daemon.test.sh
+tests/fm-guard-stale-banner.test.sh
+tests/fm-inactive-reconcile.test.sh
+tests/fm-mail-check.test.sh
+tests/fm-mail.test.sh
+tests/fm-pi-watch-extension.test.sh
+tests/fm-session-lock-ancestry.test.sh
+tests/fm-supervision-events.test.sh
+tests/fm-task-inbox.test.sh
+tests/fm-tool-update-check.test.sh
+tests/fm-turnend-guard.test.sh
+tests/fm-wake-daemon-lifecycle-e2e.test.sh
+tests/fm-wake-drain-unread-status.test.sh
+tests/fm-wake-queue.test.sh
+tests/fm-watch-arm.test.sh
+tests/fm-watch-checkpoint.test.sh
+tests/fm-watch-recovery-loop.test.sh
+tests/fm-watch-triage.test.sh
+tests/fm-watcher-lock.test.sh
+tests/fm-classify-activity-fold-cost.test.sh
+tests/fm-classify-decision-key.test.sh

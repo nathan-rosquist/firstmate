@@ -1,0 +1,50 @@
+### FIXED lib (this change): operator's Bearings report, 256 routed status lines, 15s activity budget
+snapshot bin: /c/Users/nathan.rosquist/.no-mistakes/worktrees/20139a6921be/01M2TY5353E1WGP7ANGEETTTHR/bin
+FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=15 (shipped default is 2)
+FM_SNAPSHOT_PARENT_ACTIVITY_LINES=256 (shipped default is 256)
+
+--- operator-visible Bearings report, 256 routed status lines (wall 63617 ms) ---
+schema: fm-bearings.v1
+home: fm-parent-activity-drive.5TsOEH/home-256
+generated: "2026-07-11T18:00:00Z"
+prs: "not_requested (run: /bearings include PRs)"
+contributions: 
+  scope: owned contributions per home
+  known: 0
+  checked: 0
+  counts: 
+    captain: 0
+    fleet: 0
+    maintainer: 0
+    nobody: 0
+  complete: false
+  proven_clear: false
+  unmeasured_homes: 1
+  unreadable_records: 1
+  unmeasured: 0
+  stale_verdicts: 0
+  missing_verdicts: 0
+  captain_omitted: 0
+  captain: []
+in_flight: []
+secondmates[2]{id,state,doing,provenance,freshness,age_seconds,contradiction,reason}:
+  (registry),unknown,registered secondmate table read timed out,registered-table,unavailable,null,false,registered secondmate table read timed out
+  domain-alpha,unknown,secondmate registration is unknown because the registry read is incomplete or unavailable,parent-event-fallback,historical-event,0,false,secondmate registration is unknown because the registry read is incomplete or unavailable
+secondmate_reconcile: []
+decisions_open: []
+landed: []
+gates: []
+reports: []
+recorded_prs: []
+unhealthy_endpoints[1]{id,backend,target,exists,agent}:
+  domain-alpha,tmux,"firstmate:fm-domain-alpha",false,unknown
+omitted[8]{surface,reveal}:
+  backlog item bodies,"--fields bodies"
+  task paths,"--fields paths"
+  watch/steer actions,"--fields actions"
+  healthy endpoint detail,"--fields endpoints"
+  full scout-report inventory,"--all-reports"
+  "secondmate home(s) with unreadable structured state: 1",inspect the listed secondmate home ledgers
+  "secondmate registry unavailable: registered secondmate table read timed out",inspect data/secondmates.md
+  live PR discovery + checks,"--include-prs"
+

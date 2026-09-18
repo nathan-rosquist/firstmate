@@ -1,0 +1,7 @@
+snapshot bin: /c/Users/nathan.rosquist/.no-mistakes/worktrees/20139a6921be/01M2TY5353E1WGP7ANGEETTTHR/bin
+FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=2 (shipped default is 2)
+
+--- 256 routed status lines (snapshot wall 35887 ms) ---
+activity_scan   : {"records":[],"available":false,"input_truncated":false,"retained_truncated":false,"reasons":["timeout"],"lines_in_window":0,"records_in_window":0}
+open_activities : []
+

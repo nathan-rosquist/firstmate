@@ -1,0 +1,57 @@
+=== base-vs-fixed differential over a crafted status corpus ===
+corpus:
+     1	working [key=phase1]: first phase under way
+     2	[key=phase2] working: colon-form key before the verb
+     3	needs-decision [key=release]: choose release A or B
+     4	working: keyless working line
+     5	blocked [key=gate]: waiting on external legal
+     6	resolved [key=release]: went with A
+     7	working [key=bad slug!]: malformed stated key
+     8	working [key=]: empty stated key
+     9	done [key=phase1]: first phase complete
+    10	working [corr=abc123] [key=phase3]: corr tag ahead of the key
+    11	working [corr=zzz]: corr tag with no key
+    12	note about [key=phase9] mentioned mid-note but not a tag
+    13	captain-held [key=gate]: captain took it
+    14	working [key=phase.dot-dash_ok]: full legal slug charset
+    15	failed [key=phase3]: third phase failed
+    16	working [key=phase4]: fourth phase under way
+    17	   
+    18	working [key=phase4]: fourth phase re-opened later
+
+IDENTICAL base vs fixed: status_open_activities (named-file form and streaming form)
+IDENTICAL base vs fixed: status_open_decisions (named-file form and streaming form)
+IDENTICAL base vs fixed: status_open_decisions_incremental (named-file form and streaming form)
+
+records the fixed fold publishes for that corpus (TAB shown as ->):
+default -> working -> corr tag with no key
+phase.dot-dash_ok -> working -> full legal slug charset
+phase4 -> working -> fourth phase re-opened later
+
+byte-level check including the trailing newline:
+byte-identical
+0000160   s   e       r   e   -   o   p   e   n   e   d       l   a   t
+0000200   e   r  \n
+0000203
+=== decisions differential over an open-decision corpus ===
+     1	needs-decision [key=release]: choose release A or B
+     2	[key=schema] needs-decision: colon-form key, still open
+     3	needs-decision: keyless decision, still open
+     4	blocked [key=gate]: waiting on external legal
+     5	needs-decision [key=bad slug!]: malformed key must not fold as default
+     6	working [key=phase1]: unrelated work
+     7	needs-decision [key=closed-one]: will be resolved below
+     8	resolved [key=closed-one]: picked B
+     9	blocked [key=held-one]: will be captain-held below
+    10	captain-held [key=held-one]: captain took it
+    11	needs-decision [key=phase.dot_ok-9]: full legal slug charset
+
+BYTE-IDENTICAL base vs fixed: status_open_decisions                    (189 bytes of output, named-file and streaming forms)
+BYTE-IDENTICAL base vs fixed: status_open_decisions_incremental        (189 bytes of output, named-file and streaming forms)
+BYTE-IDENTICAL base vs fixed: status_open_activities                   (30 bytes of output, named-file and streaming forms)
+
+open decisions the fixed classifier publishes (TAB shown as ->):
+release -> needs-decision -> choose release A or B
+default -> needs-decision -> keyless decision, still open
+gate -> blocked -> waiting on external legal
+phase.dot_ok-9 -> needs-decision -> full legal slug charset

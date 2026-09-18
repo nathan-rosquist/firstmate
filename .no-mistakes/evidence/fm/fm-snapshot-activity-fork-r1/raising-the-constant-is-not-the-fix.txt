@@ -1,0 +1,18 @@
+### BASE lib (pre-fix): 1024-line window, budget raised 10x to 20s
+snapshot bin: /tmp/pa/bin-base
+FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=20 (shipped default is 2)
+FM_SNAPSHOT_PARENT_ACTIVITY_LINES=1024 (shipped default is 256)
+
+--- 1024 routed status lines (snapshot wall 58850 ms) ---
+activity_scan   : {"records":[],"available":false,"input_truncated":false,"retained_truncated":false,"reasons":["timeout"],"lines_in_window":0,"records_in_window":0}
+open_activities : []
+
+### FIXED lib (this change): same window, same 20s budget
+snapshot bin: /c/Users/nathan.rosquist/.no-mistakes/worktrees/20139a6921be/01M2TY5353E1WGP7ANGEETTTHR/bin
+FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=20 (shipped default is 2)
+FM_SNAPSHOT_PARENT_ACTIVITY_LINES=1024 (shipped default is 256)
+
+--- 1024 routed status lines (snapshot wall 37170 ms) ---
+activity_scan   : {"records":[{"key":"phase7","verb":"working","summary":"step 1015 under way on the parent channel"},{"key":"phase8","verb":"working","summary":"step 1016 under way on the parent channel"},{"key":"phase0","verb":"working","summary":"step 1017 under way on the parent channel"},{"key":"phase1","verb":"working","summary":"step 1018 under way on the parent channel"},{"key":"phase2","verb":"working","summary":"step 1019 under way on the parent channel"},{"key":"phase3","verb":"working","summary":"step 1020 under way on the parent channel"},{"key":"phase4","verb":"working","summary":"step 1021 under way on the parent channel"},{"key":"phase5","verb":"working","summary":"step 1022 under way on the parent channel"},{"key":"phase6","verb":"working","summary":"step 1023 under way on the parent channel"}],"available":true,"input_truncated":false,"retained_truncated":false,"reasons":[],"lines_in_window":1024,"records_in_window":9}
+open_activities : ["phase7=working","phase8=working","phase0=working","phase1=working","phase2=working","phase3=working","phase4=working","phase5=working","phase6=working"]
+
