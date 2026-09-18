@@ -25,10 +25,14 @@
 # liveness beacon (state/.last-watcher-beat) is fresh within FM_GUARD_GRACE (the
 # single source of truth, shared with fm-watch.sh and fm-guard.sh). That
 # confirmation is bounded per startup PHASE by FM_ARM_CONFIRM_TIMEOUT (the
-# confirmation loop below owns the phases), never over the whole cold start, so
-# a slow platform cannot make this arm tear down a child that is still coming
-# up. It prints exactly one unambiguous verdict line, preceded on the
-# confirmation-timeout path by one diagnostic line naming the stalled phase:
+# confirmation loop below owns the phases) rather than over the whole cold
+# start, so a child that reaches each next startup step within one window has
+# its budget re-armed and is left alone however slowly the whole start runs.
+# The bound is still wall-clock: a child that spends a whole window inside one
+# step is torn down and reported as a stall in that phase, even when it was
+# otherwise progressing. It prints exactly one unambiguous verdict line,
+# preceded on the confirmation-timeout path by one diagnostic line naming the
+# stalled phase:
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it

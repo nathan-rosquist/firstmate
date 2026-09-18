@@ -101,7 +101,9 @@ An attached arm follows verified identity-matched successors and resolves the sa
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after its durable wake was handled and acknowledged, while an unrelated queue producer or a recycled PID cannot satisfy the match.
 Only a cycle with no matching delivery record emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
-A fresh child's confirmation is bounded per startup phase (forked with no lock claimed yet, lock claimed, identity published, beacon published) rather than over the whole cold start, so a slow platform never has a progressing child torn down while a stall inside one phase still fails loudly; `bin/fm-watch-arm.sh` owns the phases, the platform-scaled `FM_ARM_CONFIRM_TIMEOUT` default, and the phase recorded on a timed-out cycle.
+A fresh child's confirmation is bounded per startup phase (forked with no lock claimed yet, lock claimed, identity published, beacon published) rather than over the whole cold start, so a child that reaches each next step within one window has its budget re-armed and is left alone however slowly the whole start runs.
+The bound is still wall-clock, so a child that spends a whole window inside one phase is torn down and reported as a stall in that phase, even when it was otherwise progressing.
+`bin/fm-watch-arm.sh` owns the phases, the platform-scaled `FM_ARM_CONFIRM_TIMEOUT` default, and the phase recorded on a timed-out cycle.
 A timed-out cycle names that phase in both `state/.watch-cycle-exits.log` as `reason=confirmation-timeout:<phase>` and the arm's stdout, so a child that never creates `state/.watch.lock` at all is recorded against the `fork` phase.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
