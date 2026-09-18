@@ -1382,6 +1382,7 @@ families_for_changed_path() {
     bin/fm-classify-lib.sh)
       printf '%s\n' watcher-wake-lock
       printf '%s\n' "__script__:fm-classify-activity-fold-cost.test.sh"
+      printf '%s\n' "__script__:fm-classify-decision-key.test.sh"
       ;;
     bin/fm-afk*)
       printf '%s\n' afk
