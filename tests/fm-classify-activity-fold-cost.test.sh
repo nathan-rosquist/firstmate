@@ -28,6 +28,8 @@
 # bound has to hold at four times the window size.
 set -u
 
+LC_ALL=C
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

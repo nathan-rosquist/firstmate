@@ -688,6 +688,7 @@ tests/fm-busy-adapter-wiring.test.sh 49731
 tests/fm-busy-state.test.sh 2926
 tests/fm-calm-pi-extension.test.sh 256
 tests/fm-check-unregister.test.sh 481
+tests/fm-classify-activity-fold-cost.test.sh 19545
 tests/fm-classify-corr-token.test.sh 38742
 tests/fm-classify-decision-key.test.sh 1167
 tests/fm-claude-stop-autoarm-live-e2e.test.sh 21
