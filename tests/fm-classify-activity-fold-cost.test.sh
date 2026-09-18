@@ -24,7 +24,7 @@
 #
 # Raising FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT is deliberately NOT what makes
 # these pass: the defect's cost grew with the log, so every larger constant fails
-# again later and just as silently. Case two is what says so - the same per-line
+# again later and just as silently. The wide case is what says so - the per-line
 # bound has to hold at four times the window size.
 set -u
 
@@ -122,12 +122,11 @@ fold_cost() {  # <out-var> <status-file> <out-file>
 # is both the realistic shape and the fold's most expensive branch.
 write_activity_log() {  # <path> <lines>
   local f=$1 n=$2 i=0
-  : > "$f"
   while [ "$i" -lt "$n" ]; do
     printf 'working [key=phase%s]: step %s under way on the parent channel\n' \
-      "$((i % 9))" "$i" >> "$f"
+      "$((i % 9))" "$i"
     i=$((i + 1))
-  done
+  done > "$f"
 }
 
 # Forks per line are a ratio, so the calibration only has to be above the clock
@@ -174,22 +173,9 @@ want:
 ${want%$'\n'}"
 }
 
-# The fold reads a whole parent-activity window without spending a process per
-# status line. This is the case that fails on the defect, by a factor of 32.
-test_activity_fold_spends_no_process_per_line() {
-  local dir cost
-  dir="$TMP_ROOT/window"
-  mkdir -p "$dir"
-  write_activity_log "$dir/parent.status" "$WINDOW_LINES"
-  fold_cost cost "$dir/parent.status" "$dir/out"
-  assert_fold_output "$dir/out" "$WINDOW_LINES" "window fold"
-  assert_under_fork_budget "$cost" "$WINDOW_LINES" "window fold"
-  pass "a full parent-activity window folds without a process per status line"
-}
-
-# The same bound at four times the window. A fold whose per-line cost is a fork
-# passes nothing here either, and - the point - a fix that only bought headroom
-# inside one budget would come apart exactly here, as the log grows.
+# The per-line bound at four times the window. A fold whose per-line cost is a
+# fork fails here by a factor of 32, and - the point - a fix that only bought
+# headroom inside one budget would come apart exactly here, as the log grows.
 test_activity_fold_cost_does_not_grow_with_the_log() {
   local dir cost
   dir="$TMP_ROOT/wide"
@@ -218,6 +204,5 @@ test_streaming_form_takes_the_same_path() {
   pass "the streamed form the parent-activity reader uses folds at the same bound"
 }
 
-test_activity_fold_spends_no_process_per_line
 test_activity_fold_cost_does_not_grow_with_the_log
 test_streaming_form_takes_the_same_path

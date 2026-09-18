@@ -1716,17 +1716,12 @@ _fm_status_open_activities_stream() {
       *[![:space:]]*) ;;
       *) continue ;;
     esac
-    # Out-var calls throughout, and the key lookup hoisted behind the verb test
-    # the way _fm_decision_fold_line does it. Every one of these was a command
-    # substitution on a per-line hot path whose most common verb (working) took
-    # the most expensive branch, so the fold cost lines x 4 forks and blew the
-    # caller's wall-clock budget silently; see status_line_verb's note on why the
-    # out-var forms exist and on picking <out-var> names the callee cannot shadow.
+    # Out-var calls throughout. Every one of these was a command substitution on
+    # a per-line hot path whose most common verb (working) took the most
+    # expensive branch, so the fold cost lines x 4 forks and blew the caller's
+    # wall-clock budget silently; see status_line_verb's note on why the out-var
+    # forms exist and on picking <out-var> names the callee cannot shadow.
     status_line_verb "$line" verb
-    case "$verb" in
-      working|"$pause"|done|failed|needs-decision|blocked|"$resolve"|"$held") ;;
-      *) continue ;;
-    esac
     _fm_decision_key "$line" key || continue
     case "$verb" in
       working|"$pause")
@@ -1734,7 +1729,7 @@ _fm_status_open_activities_stream() {
         _fm_decision_drop "$open" "$key" open
         open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
         ;;
-      *)
+      done|failed|needs-decision|blocked|"$resolve"|"$held")
         _fm_decision_drop "$open" "$key" open
         ;;
     esac
