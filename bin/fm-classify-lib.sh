@@ -409,7 +409,12 @@ _fm_key_before_colon() {  # <status-line>
 # the line has no colon or no complete token there; slug charset validity is
 # the caller's check via _fm_decision_slug_ok, exactly as for the before-colon
 # position.
-_fm_key_at_note_head() {  # <status-line> -> raw slug
+# Printed, or assigned to <out-var> when one is given, so a per-line caller on a
+# hot path can take the slug without forking a command substitution. On failure
+# <out-var> is left untouched, so callers must branch on the return status rather
+# than on the variable. Same dynamic-scope caveat as status_line_verb: an
+# <out-var> named like this function's own local (rest) would be lost.
+_fm_key_at_note_head() {  # <status-line> [<out-var>] -> raw slug
   local rest
   case "$1" in
     *:*) rest=${1#*:} ;;
@@ -417,9 +422,10 @@ _fm_key_at_note_head() {  # <status-line> -> raw slug
   esac
   rest=${rest#"${rest%%[![:space:]]*}"}
   case "$rest" in
-    \[key=*\]*) rest=${rest#\[key=}; printf '%s' "${rest%%\]*}" ;;
+    \[key=*\]*) rest=${rest#\[key=}; rest=${rest%%\]*} ;;
     *) return 1 ;;
   esac
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$rest"; else printf '%s' "$rest"; fi
 }
 # 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
 _fm_decision_slug_ok() {  # <slug>
@@ -428,48 +434,72 @@ _fm_decision_slug_ok() {  # <slug>
     *) return 0 ;;
   esac
 }
-status_line_note() {  # <status-line> -> text after the first colon, trimmed
+# Printed, or assigned to <out-var> when one is given, for the same per-line
+# hot-path reason as status_line_verb, and with the same dynamic-scope caveat:
+# an <out-var> named like one of this function's own locals (n, k) would be lost.
+status_line_note() {  # <status-line> [<out-var>] -> text after the first colon, trimmed
   local n k
   case "$1" in
-    *:*) n=${1#*:}; n=${n#"${n%%[![:space:]]*}"} ;;
-    *) printf '%s' "$1"; return 0 ;;
+    *:*)
+      n=${1#*:}; n=${n#"${n%%[![:space:]]*}"}
+      # A note-head token that states this line's key (no before-colon token, valid
+      # slug) is key metadata, not note text: strip it so both stated-key positions
+      # yield the same note.
+      if ! _fm_key_before_colon "$1" && _fm_key_at_note_head "$1" k \
+        && _fm_decision_slug_ok "$k"; then
+        n=${n#"[key=$k]"}
+        n=${n#"${n%%[![:space:]]*}"}
+      fi
+      ;;
+    *) n=$1 ;;
   esac
-  # A note-head token that states this line's key (no before-colon token, valid
-  # slug) is key metadata, not note text: strip it so both stated-key positions
-  # yield the same note.
-  if ! _fm_key_before_colon "$1" && k=$(_fm_key_at_note_head "$1") \
-    && _fm_decision_slug_ok "$k"; then
-    n=${n#"[key=$k]"}
-    n=${n#"${n%%[![:space:]]*}"}
-  fi
-  printf '%s' "$n"
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$n"; else printf '%s' "$n"; fi
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
+# Printed, or assigned to <out-var> when one is given, for the same per-line
+# hot-path reason as status_line_verb. A malformed slug still fails without
+# assigning, so callers must branch on the return status. Same dynamic-scope
+# caveat: an <out-var> named like this function's own local (k) would be lost.
+_fm_decision_key() {  # <status-line> [<out-var>] -> key slug, or "default" when no token
   local k
   if _fm_key_before_colon "$1"; then
     k=${1%%:*}
     k=${k#*\[key=}
     k=${k%%\]*}
+    _fm_decision_slug_ok "$k" || return 1
+  elif _fm_key_at_note_head "$1" k; then
+    _fm_decision_slug_ok "$k" || return 1
   else
-    k=$(_fm_key_at_note_head "$1") || { printf 'default'; return 0; }
+    k=default
   fi
-  _fm_decision_slug_ok "$k" || return 1
-  printf '%s' "$k"
+  if [ "$#" -gt 1 ]; then printf -v "$2" '%s' "$k"; else printf '%s' "$k"; fi
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
-_fm_decision_drop() {  # <open-set> <key>
+# The printed form is consumed through a command substitution, which strips the
+# set's single trailing newline; the <out-var> form assigns the set verbatim,
+# newline terminator included, so a per-line caller can fold without forking and
+# without re-appending that terminator by hand. Same dynamic-scope caveat: an
+# <out-var> named like one of this function's own locals (set, key, line, out)
+# would be lost - passing the caller's own accumulator is safe and is the point.
+# The split is parameter expansion rather than `read` over a here-document
+# because a here-document is materialised once per call, which on a per-line
+# caller is a filesystem round trip per status line - the same order of cost as
+# the forks removed above. The globs here hold no bracket class, so they avoid
+# the bash 3.2 penalty _fm_decision_fold_line documents. Records are
+# newline-terminated, so a final fragment with no terminator is the last record
+# and an empty one is skipped exactly as the `read` form skipped it.
+_fm_decision_drop() {  # <open-set> <key> [<out-var>]
   local set=$1 key=$2 line out=''
-  while IFS= read -r line; do
+  while [ -n "$set" ]; do
+    line=${set%%$'\n'*}
+    if [ "$line" = "$set" ]; then set=''; else set=${set#*$'\n'}; fi
     [ -n "$line" ] || continue
     case "$line" in
       "$key"$'\t'*) : ;;
       *) out="${out}${line}"$'\n' ;;
     esac
-  done <<EOF
-$set
-EOF
-  printf '%s' "$out"
+  done
+  if [ "$#" -gt 2 ]; then printf -v "$3" '%s' "$out"; else printf '%s' "$out"; fi
 }
 # Fold ONE status line into an existing "<key>\t<verb>\t<note>\n"-per-line open
 # set, applying the same needs-decision/blocked-opens, resolved/captain-held-closes
@@ -1686,18 +1716,21 @@ _fm_status_open_activities_stream() {
       *[![:space:]]*) ;;
       *) continue ;;
     esac
-    verb=$(status_line_verb "$line")
-    key=$(_fm_decision_key "$line") || continue
+    # Out-var calls throughout. Every one of these was a command substitution on
+    # a per-line hot path whose most common verb (working) took the most
+    # expensive branch, so the fold cost lines x 4 forks and blew the caller's
+    # wall-clock budget silently; see status_line_verb's note on why the out-var
+    # forms exist and on picking <out-var> names the callee cannot shadow.
+    status_line_verb "$line" verb
+    _fm_decision_key "$line" key || continue
     case "$verb" in
       working|"$pause")
-        note=$(status_line_note "$line")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
+        status_line_note "$line" note
+        _fm_decision_drop "$open" "$key" open
         open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
         ;;
       done|failed|needs-decision|blocked|"$resolve"|"$held")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
+        _fm_decision_drop "$open" "$key" open
         ;;
     esac
   done

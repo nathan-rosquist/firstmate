@@ -688,6 +688,7 @@ tests/fm-busy-adapter-wiring.test.sh 49731
 tests/fm-busy-state.test.sh 2926
 tests/fm-calm-pi-extension.test.sh 256
 tests/fm-check-unregister.test.sh 481
+tests/fm-classify-activity-fold-cost.test.sh 7423
 tests/fm-classify-corr-token.test.sh 38742
 tests/fm-classify-decision-key.test.sh 1167
 tests/fm-claude-stop-autoarm-live-e2e.test.sh 21
@@ -1375,8 +1376,13 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
-    bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
+    bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
+      ;;
+    bin/fm-classify-lib.sh)
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' "__script__:fm-classify-activity-fold-cost.test.sh"
+      printf '%s\n' "__script__:fm-classify-decision-key.test.sh"
       ;;
     bin/fm-afk*)
       printf '%s\n' afk
