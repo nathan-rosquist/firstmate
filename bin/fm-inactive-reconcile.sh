@@ -8,19 +8,22 @@
 #
 # This is an adjunct to the existing watcher poll loop and session-start path,
 # not a watcher, daemon, PR poll, or forge client of its own.
-# In a secondmate home every `scan` invocation, which is every watcher poll,
-# first runs the LEDGER-FIRST parent delivery: a direct child whose status
-# ledger ends in a whole `done:` or `failed:` line has stated its own outcome,
+# In a secondmate home a `scan` invocation, which is every watcher poll, runs
+# the LEDGER-FIRST parent delivery unless the inactive scan below is due to own
+# that invocation: a direct child whose status ledger ends in a whole `done:`
+# or `failed:` line has stated its own outcome,
 # so that line is published on the parent channel at once through
 # bin/fm-parent-channel-lib.sh as
 #   <state> [key=child-outcome-<child>-<state>-<fp8>]: child <child> <state>: <note> [pr=<url>] [mode=<mode>] [yolo=<posture>] [report=data/<child>/report.md]
 # carrying the child's recorded PR, delivery mode, merge posture, and scout
 # report pointer, without consulting fm-crew-state.sh and without waiting for
-# the inactive cadence. A line still being appended (no trailing newline yet)
-# is left for the next poll. This is what keeps a mate's PR-ready, finding,
-# and failure outcomes from depending on the mate model appending them
-# (docs/secondmate-parent-channel.md). A main home has no parent channel and
-# skips this path: its watcher already signals every child status line.
+# the inactive cadence. It runs under the same aggregate budget as the scan
+# below and keeps its own durable cursor. A line still being appended (no
+# trailing newline yet) is left for the next poll. This is what keeps a mate's
+# PR-ready, finding, and failure outcomes from depending on the mate model
+# appending them (docs/secondmate-parent-channel.md). A main home has no parent
+# channel and skips this path: its watcher already signals every child status
+# line.
 # `report <task-id>` runs that same delivery for one child on behalf of a
 # caller that already holds the child's meta lock, which bin/fm-teardown.sh
 # does before it removes the child's record; it exits 0 when the line is
@@ -29,17 +32,67 @@
 # The cadence-gated scan below then evaluates at most once per
 # FM_INACTIVE_RECONCILE_SECS (default 900, valid 60..1800) per home, except
 # that --startup performs the same scan immediately in the locked session
-# start's deferred worker. Each scan uses an aggregate
-# FM_INACTIVE_RECONCILE_BUDGET_SECS deadline (default 10, valid 1..30) and
-# resumes after its last visited child on the next scan.
-# The scan enforces that budget itself through a whole-second deadline, and the
-# first due child of every scan is always visited with at least a one-second
-# state-read bound: whole-second arithmetic can otherwise round a small budget
-# to zero mid-scan, and an invocation that exits having visited nothing would
-# advance the durable cursor past a child it never examined. A process-group
-# kill one second after the budget remains as a backstop for a scan wedged in
-# an unbounded wait (for example a live-held wake-queue lock), so the clean
-# deadline path is not racing its own backstop.
+# start's deferred worker.
+#
+# One invocation spends one FM_INACTIVE_RECONCILE_BUDGET_SECS deadline
+# (default 10, valid 1..30). On an ordinary poll it is owned outright by
+# whichever pass is due rather than shared between them, so neither pass can
+# starve the other poll after poll. Dueness is settled once, before either pass
+# runs. An overdue scan - an existing scan marker that has reached
+# FM_INACTIVE_RECONCILE_SECS - owns the whole budget while the ledger pass sits
+# that invocation out. A missing scan marker is not dueness: it says the scan
+# has no history, not that it has a backlog, so the first invocation in a
+# secondmate home anchors the scan cadence and still leaves the invocation to
+# the ledger delivery that poll is otherwise for. A home with no ledger pass has
+# nothing else to spend the budget on, so there the scan takes that first
+# invocation. Otherwise the ledger pass owns it. At the default poll and cadence
+# that gives the ledger pass almost every invocation and gives the scan an
+# unshared budget on the invocations where it actually has work.
+# --startup is the exception, and runs BOTH passes on the one invocation: the
+# ledger delivery first, then the scan, and the scan takes a FRESH deadline
+# rather than whatever the ledger pass left it, so it always enters with a full
+# unshared budget for its authoritative state reads. A --startup invocation in a
+# secondmate home therefore spends up to two budgets, once per session, and its
+# outer backstop is widened to match. A main home has no parent channel, so the
+# ledger pass never runs there and --startup spends one budget like any other
+# poll; ordinary polls keep one deadline and the tighter backstop too.
+# Ownership exists to stop one pass starving the other in steady state, and a
+# one-shot catch-up at session start is not steady state. Startup is exactly the
+# moment outcomes have accumulated with nothing watching, so it is the wrong
+# place to economize: skipping ledger delivery there, or handing the scan a
+# budget the ledger pass has already spent, would withhold the very outcomes it
+# exists to catch up on.
+# Each pass owns a durable cursor - .inactive-outcome-ledger for the ledger
+# pass, .inactive-outcome-reconcile for the scan - walks the children after it,
+# wraps through the earlier ones once that completes, and resumes after its
+# last visited child on the next invocation, so the pass that yields an
+# invocation resumes where it stopped rather than losing its place. A pass
+# checks the deadline before it records a child as visited, so stopping on the
+# deadline never advances a cursor past a child it did not examine. The scan
+# records every child it visits, because each visit costs an authoritative
+# state read; the ledger pass records only a child that owed a delivery and the
+# last child it visited before a deadline stop, because its visits are cheap
+# and the rewrite is not.
+# The scan additionally visits its first due child with at least a one-second
+# state-read bound, because whole-second arithmetic can otherwise round a small
+# budget to zero mid-scan.
+# A process-group kill one second after the invocation's whole budget remains as
+# a backstop for an invocation wedged in an unbounded wait (for example a
+# live-held wake-queue lock), so the clean deadline path is not racing its own
+# backstop. That budget is one deadline for every invocation that runs a single
+# pass, and two only where both passes will actually run - a --startup
+# invocation in a secondmate home - rather than wherever --startup was merely
+# passed. That kill is SIGKILL, which skips every EXIT trap, so the scan lock is
+# held by the invoking process rather than by the bounded child it kills.
+# An ordinary poll that finds that lock held yields it, because a concurrent
+# scan is already doing this work. A --startup invocation instead waits a couple
+# of seconds for it, because a one-shot catch-up that is silently dropped is
+# indistinguishable from a quiet poll. That wait exists to survive a brief
+# overlap with a poll that is just finishing, NOT to outlast a whole one: a
+# --startup invocation that collides with a long-running poll still yields and
+# is still lost, and the session's first inactive scan then waits a full
+# FM_INACTIVE_RECONCILE_SECS. The wait stays short because it sits outside the
+# backstop, in a session-start deadline shared with the network bootstrap.
 #
 # It considers only a direct ordinary crewmate whose newest meta, status, or
 # turn-ended mtime is older than that interval and whose last status is not
@@ -72,8 +125,8 @@
 # ledger_claim binds that one ledger fingerprint to the already-delivered
 # inactive receipt so the two publishers cannot report one completion twice.
 # Pending atomically becomes reported after parent append or presented after
-# main-home acknowledgement. The atomic epoch/cursor marker's mtime gates scans,
-# and its cursor records the last child visited within the aggregate budget.
+# main-home acknowledgement. The scan marker's mtime is what gates the scan
+# cadence; both markers share the same atomic epoch/cursor format.
 #
 # The scan reads only durable local state and fm-crew-state.sh; it never invokes
 # gh, gh-axi, curl, fm-pr-check.sh, fm-pr-poll.sh, or a state *.check.sh.
@@ -85,6 +138,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 OUTCOME_DIR="$STATE/terminal-outcomes"
 SCAN_MARKER="$STATE/.inactive-outcome-reconcile"
+LEDGER_MARKER="$STATE/.inactive-outcome-ledger"
 SCAN_LOCK="$STATE/.inactive-outcome-reconcile.lock"
 CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
@@ -277,20 +331,29 @@ scan_marker_age() {
   if [ "$now" -lt "$m" ]; then printf '0\n'; else printf '%s\n' $((now - m)); fi
 }
 
-scan_marker_cursor() {
-  [ -f "$SCAN_MARKER" ] && [ ! -L "$SCAN_MARKER" ] || return 0
-  grep '^cursor=' "$SCAN_MARKER" 2>/dev/null | tail -1 | cut -d= -f2- || true
+# Both passes resume from a marker in this one format, so the position a pass
+# stops at is durable in the same way whichever pass wrote it.
+marker_cursor() { # <marker>
+  local marker=$1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 0
+  grep '^cursor=' "$marker" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-write_scan_marker() { # <cursor>
-  local cursor=$1 marker_tmp
-  marker_tmp=$(mktemp "$STATE/.inactive-outcome-reconcile.XXXXXX") || return 1
+write_marker() { # <marker> <cursor>
+  local marker=$1 cursor=$2 marker_tmp
+  marker_tmp=$(mktemp "$marker.XXXXXX") || return 1
   {
     printf 'epoch=%s\n' "$(reconcile_now)"
     printf 'cursor=%s\n' "$cursor"
   } > "$marker_tmp" || { rm -f "$marker_tmp"; return 1; }
   chmod 600 "$marker_tmp" 2>/dev/null || true
-  mv -f "$marker_tmp" "$SCAN_MARKER" || { rm -f "$marker_tmp"; return 1; }
+  mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; return 1; }
+}
+
+scan_marker_cursor() { marker_cursor "$SCAN_MARKER"; }
+
+write_scan_marker() { # <cursor>
+  write_marker "$SCAN_MARKER" "$1"
 }
 
 meta_field() {
@@ -399,7 +462,10 @@ claim_inactive_report_for_ledger() { # <task> <incarnation> <state> <ledger-fing
 # The ledger-first parent delivery for one direct child, for a caller holding
 # the child's meta lock. Returns 0 when the line is delivered, already
 # delivered, or nothing is owed, and 1 when it is owed but the parent channel
-# could not be written (the notice is queued once per record).
+# could not be written (the notice is queued once per record). Those three
+# outcomes cost wildly different amounts and the exit status cannot tell them
+# apart, so LEDGER_REPORT_DELIVERED is raised for the caller at the one point
+# where this child is known to owe a line of its own.
 report_child_ledger_locked() { # <id> <meta>
   local id=$1 meta=$2 status last previous state note pr mode yolo data incarnation fingerprint predecessor_head outcome_key line
   status="$STATE/$id.status"
@@ -411,6 +477,7 @@ report_child_ledger_locked() { # <id> <meta>
   outcome_key="child-outcome-$id-$state-${fingerprint:0:8}"
   ensure_record "$fingerprint" "$id" "$incarnation" "$state" "$outcome_key" direct upstream "$pr" || return 1
   [ -n "$RECORD_PENDING" ] || return 0
+  LEDGER_REPORT_DELIVERED=1
   last_status_line "$status" previous >/dev/null
   predecessor_head=$(sha256_text "$previous")
   if claim_inactive_report_for_ledger "$id" "$incarnation" "$state" "$fingerprint" "$predecessor_head"; then
@@ -441,16 +508,50 @@ report_child_ledger_locked() { # <id> <meta>
   return 1
 }
 
-# Every direct child's ledger, under its meta lock. Cheap file reads only, so
-# it runs on every poll in a secondmate home; a delivery failure is already
-# queued as a notice and never fails the scan.
-ledger_pass() {
-  local meta id lock
+# Every direct child's ledger, under its meta lock, from <cursor> onward within
+# the invocation's <deadline>. It runs in a secondmate home on every poll that
+# the inactive scan is not due to own; a delivery failure is already queued as a
+# notice and never fails the scan. Returns 3 when the deadline stopped the pass,
+# exactly as scan_pass does.
+#
+# Per-child work here is file reads and one meta lock rather than an
+# authoritative state read, so this pass takes no per-child bound of its own and
+# needs no guaranteed-first-visit floor: it is entered with the whole budget
+# still ahead of it, and the deadline can only stop it between children.
+#
+# The cursor makes the pass resumable, but rewriting the marker for every child
+# on every poll - four subprocesses and two filesystem operations each - would
+# spend the very budget the cursor exists to protect, so the write is narrowed
+# to the two occasions that pay for themselves: a child that owed a delivery,
+# whose work must not be paid for a second time, and - once per invocation
+# rather than once per child - the last child visited before the deadline stops
+# the pass. That second write is what makes the pass resumable at all, because a
+# poll in which no child owed anything would otherwise leave the cursor exactly
+# where it began, re-walk the same prefix on every later poll, and never reach
+# the children past the stop point. Both record a child only after it has been
+# examined, so stopping on the deadline never retires a child the pass did not
+# look at. An unexpectedly early kill costs a re-walk from the last recorded
+# position, which is a repeated visit rather than a skipped child, and that
+# trade is deliberate in both directions: a SIGKILL landing mid-delivery leaves
+# the interrupted child ahead of the cursor, so the next poll retries its
+# still-pending record rather than stepping over it.
+ledger_pass() { # <cursor> <after|through> <deadline>
+  local cursor=$1 range=$2 deadline=$3 meta id lock now visited=''
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    id=$(basename "$meta" .meta)
+    id=${meta##*/}
+    id=${id%.meta}
     valid_id "$id" || continue
+    case "$range" in
+      after) [ -z "$cursor" ] || [[ "$id" > "$cursor" ]] || continue ;;
+      through) [ -n "$cursor" ] && [[ "$id" > "$cursor" ]] && continue ;;
+    esac
     [ "$(meta_field "$meta" kind)" != secondmate ] || continue
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      [ -z "$visited" ] || write_marker "$LEDGER_MARKER" "$visited" || return 1
+      return 3
+    fi
     lock=$(fm_meta_lock_path "$meta") || continue
     fm_lock_try_acquire "$lock" || continue
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
@@ -458,8 +559,13 @@ ledger_pass() {
       fm_lock_release "$lock"
       continue
     fi
+    LEDGER_REPORT_DELIVERED=0
     report_child_ledger_locked "$id" "$meta" || true
     fm_lock_release "$lock"
+    if [ "$LEDGER_REPORT_DELIVERED" -eq 1 ]; then
+      write_marker "$LEDGER_MARKER" "$id" || return 1
+    fi
+    visited=$id
   done
 }
 
@@ -577,18 +683,59 @@ scan_pass() { # <cursor> <after|through> <deadline> <secondmate-id-or-empty>
 
 scan() {
   local startup=${1:-0} self='' cursor deadline rc=0 marker_rc=0
+  local ledger_cursor='' ledger_rc=0 scan_due=0 scan_primed=0 ledger_due=0
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
-  if self=$(home_secondmate_id); then
-    # The ledger-first delivery is per poll, not per cadence.
-    ledger_pass
+  # One deadline for an ordinary poll, owned by whichever pass is due, so
+  # neither pass spends the budget the other one needs.
+  deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
+  self=$(home_secondmate_id) || { marker_rc=$?; self=''; }
+  if [ -e "$SCAN_MARKER" ] && [ ! -L "$SCAN_MARKER" ]; then
+    scan_primed=1
+  fi
+  # A missing marker says the scan has no history, not that it has a backlog, so
+  # it is not dueness: anchor the cadence here and leave the invocation to the
+  # ledger delivery this poll is otherwise for. Where there is no ledger pass
+  # nothing else wants the budget, so the scan takes that first invocation.
+  if [ "$startup" = 1 ]; then
+    scan_due=1
+  elif [ "$scan_primed" = 1 ]; then
+    [ "$(scan_marker_age)" -lt "$FM_INACTIVE_RECONCILE_SECS" ] || scan_due=1
+  elif [ -z "$self" ]; then
+    scan_due=1
   else
-    marker_rc=$?
-    self=''
+    write_scan_marker '' || return 1
   fi
-  if [ "$startup" != 1 ] && [ "$(scan_marker_age)" -lt "$FM_INACTIVE_RECONCILE_SECS" ]; then
-    return 0
+  # Ownership keeps one pass from starving the other poll after poll, which is a
+  # steady-state concern. --startup is a one-shot catch-up on outcomes that piled
+  # up while nothing was watching, so it runs both passes on this one invocation
+  # rather than letting the scan claim it.
+  if [ "$startup" = 1 ] || [ "$scan_due" != 1 ]; then
+    ledger_due=1
   fi
+  if [ "$ledger_due" = 1 ] && [ -n "$self" ]; then
+    # The ledger-first delivery is per poll, not per cadence, and resumes from
+    # its own cursor rather than restarting at the first child every poll.
+    ledger_cursor=$(marker_cursor "$LEDGER_MARKER")
+    valid_id "$ledger_cursor" || ledger_cursor=''
+    ledger_pass "$ledger_cursor" after "$deadline" || ledger_rc=$?
+    if [ "$ledger_rc" -eq 0 ] && [ -n "$ledger_cursor" ]; then
+      ledger_pass "$ledger_cursor" through "$deadline" || ledger_rc=$?
+    fi
+    if [ "$ledger_rc" -eq 0 ]; then
+      write_marker "$LEDGER_MARKER" '' || return 1
+    elif [ "$ledger_rc" -ne 3 ]; then
+      return "$ledger_rc"
+    fi
+  fi
+  [ "$scan_due" = 1 ] || return 0
+  # --startup is the one invocation where both passes run, so the scan starts a
+  # budget of its own here rather than inheriting one the ledger pass may have
+  # spent. Handing scan_pass a spent deadline is what floors its guaranteed
+  # first visit to one second, below the cost of a single crew-state read, and
+  # that visit is charged after the cursor has already moved past the child.
+  [ "$startup" != 1 ] \
+    || deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
   cursor=$(scan_marker_cursor)
   valid_id "$cursor" || cursor=''
   write_scan_marker "$cursor" || return 1
@@ -597,7 +744,6 @@ scan() {
       "inactive terminal outcomes remain unreconciled: invalid .fm-secondmate-home marker" || true
     return 0
   fi
-  deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
   SCAN_FIRST_VISIT_PENDING=1
   scan_pass "$cursor" after "$deadline" "$self" || rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$cursor" ]; then
@@ -640,20 +786,50 @@ case "$mode" in
       --startup) startup=1 ;;
       *) printf 'usage: fm-inactive-reconcile.sh scan [--startup]\n' >&2; exit 2 ;;
     esac
-    # The scan's own whole-second deadline enforces the budget; this outer
+    # The scan lock belongs to THIS process, not to the bounded child below.
+    # The backstop kills that child's process group with SIGKILL, which skips
+    # every EXIT trap, so a lock taken inside the child would outlive it: for a
+    # reused pid the library's staleness path cannot reclaim it at all, because
+    # the recorded holder still answers as alive. Holding it here puts the
+    # release on the one process the backstop never kills.
+    if [ "$startup" = 1 ]; then
+      # A startup catch-up that is dropped on contention cannot be told apart
+      # from a quiet poll, and it is the one invocation that exists to collect
+      # what accumulated while nothing was watching. So wait briefly for the
+      # holder rather than yielding at once - long enough to ride out a poll
+      # that is just finishing, not long enough to outlast a whole one. This
+      # wait is outside the backstop below and inside a session-start deadline
+      # shared with the network bootstrap, so a collision with a long-running
+      # poll yields here instead of spending that deadline waiting.
+      fm_lock_acquire_wait_bounded "$SCAN_LOCK" 2 || exit 0
+    else
+      # A concurrent scan of this home already holds it and is already doing
+      # this work, so yield the poll rather than waiting for it outside the
+      # very budget this invocation exists to respect.
+      fm_lock_try_acquire "$SCAN_LOCK" || exit 0
+    fi
+    trap 'fm_lock_release "$SCAN_LOCK"' EXIT
+    # The scan's own whole-second deadlines enforce the budget; this outer
     # process-group kill is only the backstop for a scan wedged outside every
     # bounded section (an unbounded lock wait), so it fires one second after
-    # the deadline instead of racing the clean bounded exit it exists to guard.
-    if fm_run_timed $((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1)) "$0" _scan-locked "$startup"; then
+    # the last deadline the invocation can hold instead of racing the clean
+    # bounded exit it exists to guard. Two budgets are only reachable where both
+    # passes will run, which is the same condition scan() applies: --startup in
+    # a home that has a parent channel to deliver to. Everything else runs one
+    # pass and keeps the tighter bound.
+    scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS + 1))
+    if [ "$startup" = 1 ] && home_secondmate_id >/dev/null 2>&1; then
+      scan_backstop=$((FM_INACTIVE_RECONCILE_BUDGET_SECS * 2 + 1))
+    fi
+    if fm_run_timed "$scan_backstop" "$0" _scan-locked "$startup"; then
       :
     elif [ "$?" -ne 124 ]; then
       exit 1
     fi
     ;;
   _scan-locked)
+    # The `scan` caller above holds SCAN_LOCK for the whole of this child.
     [ "$#" -eq 2 ] || exit 2
-    fm_lock_acquire_wait "$SCAN_LOCK" || exit 1
-    trap 'fm_lock_release "$SCAN_LOCK"' EXIT
     scan "$2"
     ;;
   report)
@@ -676,7 +852,7 @@ case "$mode" in
     acknowledge_notice "$2"
     ;;
   -h|--help)
-    sed -n '2,40{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,95{s/^# \{0,1\}//;p;}' "$0"
     ;;
   *)
     printf 'usage: fm-inactive-reconcile.sh scan [--startup]\n' >&2

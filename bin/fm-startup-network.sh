@@ -486,8 +486,11 @@ EOF
     fi
   fi
   # One aggregate deadline covers both deferred operations. The inactive scan
-  # retains its own tighter per-scan bound inside this outer bound. Findings
-  # need no report translation: the scan writes its ordinary durable
+  # retains its own tighter per-scan bound inside this outer bound, but a
+  # session-start scan in a secondmate home runs both of its passes, so its
+  # share here is up to two of its own budgets plus a brief lock wait rather
+  # than one; bin/fm-inactive-reconcile.sh's header owns that arithmetic.
+  # Findings need no report translation: the scan writes its ordinary durable
   # inactive-outcome wakes directly. A child shell composes the two executable
   # owners only so fm_run_timed can govern them as one process group.
   if [ "$sweep_locked" -eq 1 ]; then

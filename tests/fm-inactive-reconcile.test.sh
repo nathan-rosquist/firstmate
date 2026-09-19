@@ -145,6 +145,32 @@ prime_seen() { # <state> <status>
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
+# A clock that advances a fixed step every time it is read, so a bounded pass
+# reaches its deadline after a fixed number of reads instead of after real
+# elapsed time. The same per-child work costs two orders of magnitude more on
+# some supported hosts than on others, so real elapsed time cannot decide where
+# a deadline lands without making the expected result host-specific. Every form
+# other than a bare `date +%s` is the real date.
+install_fake_clock() {
+  cat > "$WORLD/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+real=
+for candidate in /bin/date /usr/bin/date; do
+  [ -x "$candidate" ] && { real=$candidate; break; }
+done
+[ -n "$real" ] || exit 127
+if [ "$#" -eq 1 ] && [ "$1" = '+%s' ] && [ -n "${FM_FAKE_CLOCK_FILE:-}" ]; then
+  offset=$(cat "$FM_FAKE_CLOCK_FILE" 2>/dev/null)
+  case "$offset" in ''|*[!0-9]*) offset=0 ;; esac
+  printf '%s\n' "$(( $("$real" +%s) + offset ))"
+  printf '%s\n' "$(( offset + ${FM_FAKE_CLOCK_STEP:-0} ))" > "$FM_FAKE_CLOCK_FILE"
+  exit 0
+fi
+exec "$real" "$@"
+SH
+  chmod +x "$WORLD/fakebin/date"
+}
+
 # The main retains a terminal presentation receipt until the corresponding wake
 # is handled and acknowledged.
 test_main_direct_terminal_presentation_receipt() {
@@ -819,7 +845,81 @@ test_full_scan_budget_includes_wake_lock_wait() {
   # fires one second after the budget; the bound proves the scan cannot ride
   # the 30-second lock hold.
   [ "$elapsed" -le 4 ] || fail "wake lock wait exceeded aggregate scan budget (${elapsed}s)"
-  pass "aggregate scan budget includes durable wake operations"
+  # That backstop is a SIGKILL, so it runs no EXIT trap. An invocation ended by
+  # it must still leave no scan lock behind, or the next poll inherits a lock
+  # whose recorded holder is gone - and once that pid is reused, nothing
+  # reclaims it at all.
+  [ ! -e "$MAIN/state/.inactive-outcome-reconcile.lock" ] \
+    && [ ! -L "$MAIN/state/.inactive-outcome-reconcile.lock" ] \
+    || fail "an invocation ended by the backstop left its scan lock behind"
+  pass "aggregate scan budget includes durable wake operations without stranding the scan lock"
+}
+
+# The ledger pass is the first work an invocation does, and a home can hold more
+# children than one budget can carry. So when the budget runs out mid-pass the
+# position has to be durable: a pass that restarted at the first child every
+# poll would re-pay for the children it had already delivered and never reach
+# the later ones, and a pass that recorded a position it had not reached would
+# retire those children's turn without ever examining them.
+#
+# The budget is the maximum and the clock is faked, so the stop lands on a read
+# count rather than on elapsed time. Each poll restarts the clock, exactly as
+# each invocation starts its own budget. LEDGER_BUDGET_CLOCK_STEP is sized so
+# the deadline arrives partway through these four children: if a future change
+# reads the clock more often before the walk, this test stops delivering
+# anything and says so rather than passing vacuously.
+LEDGER_BUDGET_CHILDREN='a-one b-two c-three d-four'
+LEDGER_BUDGET_CLOCK_STEP=10
+
+ledger_delivered() { # <id>
+  grep -q "child-outcome-$1-done" "$MAIN/state/mate.status" 2>/dev/null
+}
+
+ledger_cursor() {
+  sed -n 's/^cursor=//p' "$MATE/state/.inactive-outcome-ledger" 2>/dev/null | tail -1
+}
+
+ledger_budget_poll() {
+  : > "$WORLD/clock"
+  FM_FAKE_CLOCK_FILE="$WORLD/clock" FM_FAKE_CLOCK_STEP="$LEDGER_BUDGET_CLOCK_STEP" \
+    FM_INACTIVE_RECONCILE_NOW=$(date +%s) FM_INACTIVE_RECONCILE_BUDGET_SECS=30 \
+    FM_FAKE_CREW_STATE='unknown' run_reconcile "$MATE"
+}
+
+test_ledger_budget_resumes_without_skipping_children() {
+  local child last_delivered first_missing cursor gap=0
+  make_world ledger-budget; bind_secondmate local
+  for child in $LEDGER_BUDGET_CHILDREN; do
+    write_child "$MATE" "$child" "done: $child finished"
+  done
+  install_fake_clock
+
+  ledger_budget_poll
+  last_delivered=''
+  first_missing=''
+  for child in $LEDGER_BUDGET_CHILDREN; do
+    if ledger_delivered "$child"; then
+      [ -z "$first_missing" ] || gap=1
+      last_delivered=$child
+    else
+      [ -n "$first_missing" ] || first_missing=$child
+    fi
+  done
+  [ -n "$last_delivered" ] || fail "the budgeted ledger pass delivered nothing at all"
+  [ -n "$first_missing" ] \
+    || fail "the ledger pass never stopped on its budget: one poll delivered every child"
+  [ "$gap" -eq 0 ] \
+    || fail "the ledger pass skipped a child and delivered a later one: $(cat "$MAIN/state/mate.status")"
+  cursor=$(ledger_cursor)
+  [ "$cursor" = "$last_delivered" ] \
+    || fail "the durable ledger position [$cursor] is not the last child visited [$last_delivered]"
+
+  ledger_budget_poll
+  ledger_delivered "$first_missing" \
+    || fail "the next poll did not resume at $first_missing, the child the budget stopped at: $(cat "$MAIN/state/mate.status")"
+  [ "$(grep -c "child-outcome-$last_delivered-done" "$MAIN/state/mate.status")" = 1 ] \
+    || fail "resuming re-delivered $last_delivered, which the previous poll had already reported"
+  pass "a ledger pass that spends its budget resumes where it stopped without skipping a child"
 }
 
 # A secondmate home seeded without its parent binding cannot report ANY terminal
@@ -922,6 +1022,7 @@ test_watcher_hook_and_idle_secondmate_exemption
 test_watcher_poll_delivers_child_ledger_line_to_parent
 test_stalled_state_read_is_bounded_and_scan_progresses
 test_full_scan_budget_includes_wake_lock_wait
+test_ledger_budget_resumes_without_skipping_children
 test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
 test_reconciliation_never_calls_forge
