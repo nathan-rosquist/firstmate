@@ -1,0 +1,20 @@
+=== test_full_scan_budget_includes_wake_lock_wait
+not ok - wake lock wait exceeded aggregate scan budget (7s)
+=== test_stalled_state_read_is_bounded_and_scan_progresses
+not ok - stalled state read exceeded aggregate scan budget (7s)
+=== test_watcher_poll_delivers_child_ledger_line_to_parent
+ok - the real watcher poll delivers a child's terminal ledger line to the parent channel
+=== test_terminal_line_after_inactive_delivery_is_not_reported_twice
+ok - inactive and ledger paths reconcile one raced completion without hiding later events
+=== test_long_terminal_lines_have_distinct_receipts
+ok - complete long ledger lines retain distinct receipt identities
+=== test_busy_child_does_not_starve_later_ledger_outcomes
+ok - busy child locks do not starve later ledger outcomes
+=== test_scan_marker_replaces_symlink_safely
+actionable: inactive terminal outcome awaiting captain presentation: child=child state=done pr=https://example.test/owner/repo/pull/1
+ok - scan marker replaces a symlink without overwriting its target
+=== test_local_secondmate_delivers_terminal_ledger_line
+ok - secondmate delivers a child's terminal ledger line once, on the next poll, from the ledger alone
+=== test_ledger_budget_resumes_without_skipping_children
+ok - a ledger pass that spends its budget resumes where it stopped without skipping a child
+DONE

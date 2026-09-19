@@ -1,0 +1,46 @@
+
+===== S4 fresh secondmate home: first poll anchors the scan cadence AND still delivers the ledger line =====
+scan marker before poll: absent
+scan marker after poll:  present
+parent channel: done [key=child-outcome-kid-done-862f2b2b]: child kid done: kid finished pr=https://example.test/owner/repo/pull/1 mode=no-mistakes yolo=off
+
+===== S5 overdue scan owns the invocation: ledger pass sits out, keeps its place, delivers next poll =====
+scan marker age before poll 1: 601s (cadence FM_INACTIVE_RECONCILE_SECS=60)
+poll 1 (scan due) parent channel: []
+poll 1 ledger marker: []
+poll 2 (scan not due) parent channel: [done [key=child-outcome-kid-done-b959a4ac]: child kid done: kid finished pr=https://example.test/owner/repo/pull/1 mode=no-mistakes yolo=off]
+
+===== S6 --startup runs BOTH passes on one invocation =====
+parent channel after one --startup invocation:
+  done [key=child-outcome-aa-ledger-done-d376aae7]: child aa-ledger done: ledger child finished pr=https://example.test/owner/repo/pull/1 mode=no-mistakes yolo=off
+  failed [key=inactive-outcome-mate-bb-prose-failed]: inactive terminal child=bb-prose fingerprint=c1718c717e9afcb44c5c179cff311120 pr=https://example.test/owner/repo/pull/1
+
+===== S7 deadline stops the ledger pass before ANY child is examined: nothing retired, next poll delivers =====
+poll 1 (deadline reached before first child) parent channel: []
+poll 1 ledger marker: [] (empty = cursor never advanced)
+poll 2 (real clock) parent channel: [done [key=child-outcome-kid-done-ac8209b3]: child kid done: kid finished pr=https://example.test/owner/repo/pull/1 mode=no-mistakes yolo=off]
+
+===== S8 scan lock contention: ordinary poll yields at once, --startup waits only a couple of seconds =====
+scan lock held by pid 2011454: yes
+ordinary poll under contention: rc=0 elapsed=2s delivered=[]
+--startup under contention:    rc=0 elapsed=8s delivered=[]
+lock still held by the holder: yes
+
+SCENARIOS COMPLETE
+
+
+===== S9 an invocation ended by the SIGKILL backstop must not strand the scan lock =====
+wake-queue lock held live by pid 2021628 (30s hold), FM_INACTIVE_RECONCILE_BUDGET_SECS=1
+scan --startup wedged on that lock: rc=0 elapsed=9s (ended by the backstop, 30s hold not ridden)
+RESULT: no scan lock left behind after the SIGKILL backstop
+
+--------------------------------------------------------------------------------
+How these were driven
+  Each block runs the real bin/fm-inactive-reconcile.sh (target a5f800b) over a
+  real firstmate home built by the suite's own fixtures - a mate home bound to a
+  parent home, real *.meta/*.status ledgers, real locks, real parent-channel
+  appends - exactly as bin/fm-watch.sh and bin/fm-startup-network.sh invoke it.
+  FM_INACTIVE_RECONCILE_BUDGET_SECS=30 (the documented maximum) is used because
+  ONE ledger delivery costs ~16-19s of wall clock on this Cygwin/Windows host,
+  well over the 10s default; S7 uses the suite's fake stepping clock so the
+  deadline lands on a read count instead of on host speed.

@@ -1,0 +1,25 @@
+Regression proof for the new budgeted/resumable ledger pass
+===========================================================
+Scenario: a secondmate home holds four direct children (a-one b-two c-three d-four),
+each with a terminal 'done:' ledger line. One watcher poll runs the parent-channel
+ledger delivery under FM_INACTIVE_RECONCILE_BUDGET_SECS=30.
+
+Both runs drive the real bin/fm-inactive-reconcile.sh over real home state; the only
+difference is which build of that script is on disk.
+
+--- BEFORE THE FIX (base f1fc96e product + the new test) -------------------------
+$ cd /tmp/fmmix.T8mgem && bash tests/one.sh test_ledger_budget_resumes_without_skipping_children
+not ok - the durable ledger position [] is not the last child visited [b-two]
+
+  The unbounded base pass delivered a-one and b-two, was ended by the outer
+  process-group SIGKILL backstop partway through, and left no durable position at
+  all (state/.inactive-outcome-ledger absent), so the next poll cannot resume: it
+  re-walks from the first child and re-pays for the deliveries already made.
+
+--- AFTER THE FIX (target a5f800b) ----------------------------------------------
+$ cd /tmp/fmtgt.ZmhSzA && bash tests/one.sh test_ledger_budget_resumes_without_skipping_children
+ok - a ledger pass that spends its budget resumes where it stopped without skipping a child
+
+  The pass stops on its own deadline between children, records only children it
+  examined, and the following poll resumes at the first child the budget did not
+  reach - with no child skipped and no child delivered twice.

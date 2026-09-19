@@ -1,0 +1,26 @@
+Two elapsed-bound assertions in tests/fm-inactive-reconcile.test.sh cannot pass on
+this host, at the target commit AND at the base commit. They are host-speed
+failures, not regressions from this change.
+
+Why: a single bash process start costs ~2s under Cygwin here, and every `scan`
+invocation spawns at least two (the outer `scan` process and the bounded
+`_scan-locked` child) plus `timeout`. Both tests pin FM_INACTIVE_RECONCILE_BUDGET_SECS=1
+and then assert the whole invocation finished within 3s / 4s of wall clock.
+
+  test_stalled_state_read_is_bounded_and_scan_progresses   asserts elapsed <= 3
+    target a5f800b : 7s (batch), 8s (clean re-run)   -> not ok
+    base   f1fc96e : 7s (batch), 5s (clean re-run)   -> not ok
+
+  test_full_scan_budget_includes_wake_lock_wait           asserts elapsed <= 4
+    target a5f800b : 7s (batch), 6s (clean re-run)   -> not ok
+    base   f1fc96e : 7s, 9s                          -> not ok
+
+The behaviour those two tests guard was still driven successfully by hand at this
+host's real cost: the invocation is ended by the backstop rather than riding a
+live 30-second lock hold, and it leaves no scan lock behind (see S9 in
+ledger-pass-scenarios-transcript.txt).
+
+For the same reason the rest of the suite was driven with
+FM_INACTIVE_RECONCILE_BUDGET_SECS=30: at the 10s default a single ledger delivery
+(~16-19s here) is killed by the backstop before it can publish, which reproduces
+identically on the base commit.
